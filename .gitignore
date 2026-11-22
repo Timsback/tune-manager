@@ -1,0 +1,13 @@
+# Donnees personnelles : jamais dans le depot
+Sauvegardes/
+Aperçus/
+apercu-*.png
+
+# Fichiers compiles : publies dans les Releases GitHub, pas dans le code
+*.exe
+Setup/bin/
+
+# Divers
+*.log
+Thumbs.db
+desktop.ini
