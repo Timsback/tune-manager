@@ -473,6 +473,9 @@ function Update-Library($release, [scriptblock]$log) {
         }
     }
     Move-Item $newLib $Lib
+    # Move-Item garde les droits du dossier %TEMP% (compte utilisateur seul) : le service audio
+    # (audiodg) ne pourrait plus lire les presets. On reprend les droits herites de config\.
+    & icacls.exe $Lib /reset /T /C /Q | Out-Null
     Sync-PersonalEq
 
     # Plugins : comme le script officiel (VST manquants, JSFX manquants ou modifies)
@@ -563,6 +566,13 @@ function Get-Diagnostic {
         -not (($_.Flow -eq 'Render' -and $KeepRender -contains $_.Name) -or ($_.Flow -eq 'Capture' -and $KeepCapture -contains $_.Name)) })
     Add ($extra.Count -eq 0) "Sorties virtuelles inutiles désactivées$(if ($extra.Count) { " ($($extra.Count) encore actives)" })" "Bouton « Désactiver les périphériques inutiles »."
     Add (Ensure-ConfigHooks) "config.txt branché sur Tune Manager" "Etape 1 : l'installation officielle ecrit config.txt."
+    if (Test-Path $Lib) {
+        # Le service audio lit les presets via le groupe Utilisateurs (S-1-5-32-545)
+        $users = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545'
+        $libOk = [bool]((Get-Acl -LiteralPath $Lib).Access | Where-Object { $_.AccessControlType -eq 'Allow' -and
+            $(try { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]) -eq $users } catch { $false }) })
+        Add $libOk "Bibliothèque lisible par le service audio" "En administrateur : icacls `"$Lib`" /reset /T /C /Q"
+    }
     $vm = Get-Process voicemeeter* -ErrorAction SilentlyContinue
     Add ([bool]$vm) "Voicemeeter lancé" "Étape 3 : configurer Voicemeeter."
     $r
@@ -1332,7 +1342,12 @@ function Show-Msg([string]$t, [string]$btn = 'OK', [string]$icon = 'Information'
 }
 if ($InstallApp) {
     try {
-        Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID -and $_.MainWindowTitle -eq 'Tune Manager' } | Stop-Process -Force -ErrorAction SilentlyContinue
+        # Fermer toute instance en cours, y compris celle cachee dans la zone de notification (sans fenetre),
+        # sinon TuneManager.ico reste verrouille et la copie echoue
+        $others = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'TuneManager\.ps1' -and $_.CommandLine -notmatch '-InstallApp' })
+        foreach ($o in $others) { Stop-Process -Id $o.ProcessId -Force -ErrorAction SilentlyContinue }
+        for ($i = 0; $i -lt 20 -and @($others | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }).Count; $i++) { Start-Sleep -Milliseconds 250 }
         New-Item -ItemType Directory $AppDir -Force | Out-Null
         $src = Split-Path $PSCommandPath
         Copy-Item $PSCommandPath (Join-Path $AppDir 'TuneManager.ps1') -Force
