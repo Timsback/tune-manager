@@ -691,9 +691,27 @@ function Get-DefaultOutputName {
         $n
     } catch { $null }
 }
-# Choisit dans Voicemeeter la sortie qui correspond au nom memorise
+# Sortie integree a la carte mere ou ecran (Realtek, HDMI/DisplayPort de la carte graphique) : rarement celle du casque
+function Test-OnboardOutput([string]$n) { $n -match 'Realtek|High Definition Audio|HDMI|DisplayPort|NVIDIA|AMD|Intel\(R\) Display|Moniteur|Monitor' }
+# Choisit dans Voicemeeter la sortie qui correspond au nom memorise.
+# Si ce nom designe une sortie integree (ex. haut-parleurs Realtek mis par defaut le temps d'une video) alors
+# qu'une carte son dediee est branchee (Sound Blaster, DAC USB...), la carte dediee est preferee.
 function Select-VMOutput([string]$pref) {
     $outs = @(Get-VMOutputs); if (-not $outs.Count) { return $null }
+    $pick = Select-VMOutputRaw $pref $outs
+    if (-not $pref -or ($pick -and (Test-OnboardOutput $pick))) {
+        $ext = @($outs | Where-Object { -not (Test-OnboardOutput $_) })
+        if ($ext.Count) {
+            $sb = $ext | Where-Object { $_ -match 'Sound Blaster|Creative' } | Sort-Object { $_ -notmatch '^(Haut-parleurs|Speakers)\b' } | Select-Object -First 1
+            if ($sb) { return $sb }
+            $hp = $ext | Where-Object { $_ -match 'Casque|Headphone|Headset' } | Select-Object -First 1
+            if ($hp) { return $hp }
+            return $ext[0]
+        }
+    }
+    $pick
+}
+function Select-VMOutputRaw([string]$pref, $outs) {
     # Sound Blaster (ex. GC7) : Creative indique "Haut-parleurs" comme peripherique de lecture principal
     # (jeu, musique) et "Casque/Headset" comme peripherique de communication (chat). Le choix prise casque /
     # sortie ligne se fait dans l'application Creative ou par le bouton du boitier, pas par le peripherique Windows.
@@ -1211,8 +1229,12 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     Disable-ExtraDevices $log; Sub 0.65
     # Voicemeeter : entree Art Tune Unified Output, sortie A1 = la sortie par defaut d'avant l'installation
     try {
+        $st = $null
         if (Test-Path (Join-Path $DB '.')) { $st = Get-State; if ($defOut) { $st['VmOut'] = $defOut; Save-State $st } elseif ($st.VmOut) { $defOut = $st.VmOut } }
-        $out = Select-VMOutput $defOut
+        # Une sortie deja choisie dans Tune Manager (reinstallation, reparation) reste prioritaire si elle existe encore
+        $out = $null
+        if ($st -and $st.VmA1) { $out = @(Get-VMOutputs) | Where-Object { $_ -eq $st.VmA1 } | Select-Object -First 1; if ($out) { & $log "  Sortie A1 conservee : $out" } }
+        if (-not $out) { $out = Select-VMOutput $defOut }
         # $instLog et non $log : dans Configure-VM, $log designe ce bloc lui-meme (recursion infinie)
         $instLog = $log
         if ($out) { & $log "  Voicemeeter :"; Configure-VM $out { param($m) & $instLog "    $m" } } else { & $log "  Voicemeeter : aucune sortie trouvee, a regler a l'etape 3" }
