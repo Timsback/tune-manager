@@ -626,6 +626,8 @@ public static class VM {
   [DllImport("VoicemeeterRemote64.dll")] public static extern int VBVMR_GetVoicemeeterType(ref int t);
   [DllImport("VoicemeeterRemote64.dll")] public static extern int VBVMR_Output_GetDeviceNumber();
   [DllImport("VoicemeeterRemote64.dll")] public static extern int VBVMR_Output_GetDeviceDescA(int i, ref int type, StringBuilder name, StringBuilder hw);
+  [DllImport("VoicemeeterRemote64.dll")] public static extern int VBVMR_Input_GetDeviceNumber();
+  [DllImport("VoicemeeterRemote64.dll")] public static extern int VBVMR_Input_GetDeviceDescA(int i, ref int type, StringBuilder name, StringBuilder hw);
   [DllImport("kernel32.dll")] public static extern IntPtr LoadLibrary(string p);
 }
 '@
@@ -635,7 +637,7 @@ function Init-VM {
     $rc = [VM]::VBVMR_Login()
     if (-not (Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue)) {
         $exe = Join-Path $VmDir 'voicemeeter_x64.exe'; if (-not (Test-Path $exe)) { $exe = Join-Path $VmDir 'voicemeeter.exe' }
-        Start-Process $exe -WorkingDirectory $VmDir -WindowStyle Minimized
+        Start-Process $exe -WorkingDirectory $VmDir -WindowStyle Hidden
         for ($w = 0; $w -lt 30 -and -not (Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue); $w++) { Start-Sleep -Milliseconds 500 }
         Start-Sleep 2; [void][VM]::VBVMR_Logout(); [void][VM]::VBVMR_Login()
     }
@@ -757,10 +759,18 @@ function Configure-VM([string]$headphones, [scriptblock]$log) {
     Set-VMOptions $log
     [void](Init-VM)
     Hide-VMWindow
-    $rc1 = [VM]::VBVMR_SetParameterStringA('Strip[0].device.wdm', 'Art Tune Unified Output')
+    # Nom exact de l'entree tel que Voicemeeter le liste ("Art Tune Unified Output (VB-Audio Virtual Cable)") :
+    # avec le nom court, Voicemeeter ne trouve pas le peripherique et le fait clignoter en rouge (aucun son)
+    $inName = 'Art Tune Unified Output'
+    for ($i = 0; $i -lt [VM]::VBVMR_Input_GetDeviceNumber(); $i++) {
+        $t = 0; $nm = New-Object Text.StringBuilder 512; $hw = New-Object Text.StringBuilder 512
+        [void][VM]::VBVMR_Input_GetDeviceDescA($i, [ref]$t, $nm, $hw)
+        if ($t -eq 3 -and $nm.ToString().StartsWith('Art Tune Unified Output')) { $inName = $nm.ToString(); break }  # 3 = WDM
+    }
+    $rc1 = [VM]::VBVMR_SetParameterStringA('Strip[0].device.wdm', $inName)
     $rc2 = [VM]::VBVMR_SetParameterStringA('Bus[0].device.wdm', $headphones)
     [void][VM]::VBVMR_SetParameterFloat('Strip[0].A1', 1)
-    & $log "Entree 1 = Art Tune Unified Output ($(if ($rc1 -eq 0) {'OK'} else {"erreur $rc1"}))"
+    & $log "Entree 1 = $inName ($(if ($rc1 -eq 0) {'OK'} else {"erreur $rc1"}))"
     & $log "Sortie A1 = $headphones ($(if ($rc2 -eq 0) {'OK'} else {"erreur $rc2"}))"
     if ($rc2 -eq 0) { try { $st = Get-State; $st.VmA1 = $headphones; Save-State $st } catch {} }
     # Demarrage avec Windows (equivalent de 'Run on Windows Startup')
@@ -1137,9 +1147,13 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     if ($needVm) {
         $x = Join-Path $InstTemp 'vm'; Expand-Archive $f.Voicemeeter $x -Force; Sub 0.3
         $exe = Get-ChildItem $x -Recurse -Filter '*Setup*.exe' | Select-Object -First 1
+        # Options ecrites AVANT tout lancement : zone de notification, fenetre cachee au demarrage.
+        # Sinon Voicemeeter s'affiche jusqu'a son reglage en fin d'installation.
+        Set-VMOptions $null
         $rc = Wait-ProcAuto (Start-Process $exe.FullName '-i -h' -PassThru) 180 $log
         & $log "  Voicemeeter : code $rc"
     } else { & $log "  Deja installe" }
+    Set-VMOptions $null
 
     Step "Installation de ReaPlugs"
     if ($needRea) {
