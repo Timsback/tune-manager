@@ -979,6 +979,34 @@ public static class PM {
   }
 }
 '@
+# Active Equalizer APO sur Art Tune + sans ouvrir le Device Selector : on ecrit exactement ce qu'il ecrit
+# en mode "Installer en tant que LFX/GFX" (releve sur une installation reelle) :
+#   MMDevices\...\Render\{id}\FxProperties : {d04e05a6...},1 = APO pre-mix, ,2 = APO post-mix
+#   EqualizerAPO\Child APOs\{id}           : sauvegarde des effets d'origine ("!VALUE" = absent) + options
+# Renvoie $false (=> repli sur le Device Selector) si la sortie a deja des effets a preserver ou si l'ecriture echoue.
+function Enable-EapoDirect([scriptblock]$log) {
+    $id = (Find-CableEndpoints).Render16; if (-not $id) { return $false }
+    $fxSub = "SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\$id\FxProperties"
+    $pk = '{d04e05a6-594b-4fb6-a80d-01af5eed7d1d}'
+    $fx = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($fxSub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [Security.AccessControl.RegistryRights]'SetValue, QueryValues')
+    if (-not $fx) { & $log "  Ecriture directe impossible (FxProperties absent)"; return $false }
+    try {
+        $orig = @{}
+        foreach ($n in 1, 2, 5, 6, 7) { $v = $fx.GetValue("$pk,$n"); if ($v -and ($EapoClsids -notcontains "$v".ToUpper())) { $orig[$n] = "$v" } }
+        if ($orig.Count) { & $log "  Effets d'origine presents sur Art Tune + : Device Selector utilise"; return $false }
+        $ch = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey("SOFTWARE\EqualizerAPO\Child APOs\$id")
+        foreach ($n in 1, 2, 5, 6, 7) { $ch.SetValue("$pk,$n", '!VALUE', 'String') }
+        $ch.SetValue('PreMixChild', '', 'String'); $ch.SetValue('PostMixChild', '', 'String')
+        $ch.SetValue('AllowSilentBufferModification', 'false', 'String'); $ch.SetValue('Version', '2', 'String'); $ch.Close()
+        $fx.SetValue("$pk,1", $EapoClsids[0], 'String'); $fx.SetValue("$pk,2", $EapoClsids[1], 'String')
+    } catch { & $log "  Ecriture directe impossible ($($_.Exception.Message))"; return $false } finally { $fx.Close() }
+    try { Restart-Service Audiosrv -Force -ErrorAction Stop } catch {}
+    Start-Sleep 2
+    $plus = Get-Endpoints | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+    $ok = [bool]($plus -and $plus.Eapo)
+    & $log $(if ($ok) { "  Equalizer APO actif sur Art Tune + (reglage direct, sans Device Selector)" } else { "  Reglage direct non confirme : Device Selector utilise" })
+    $ok
+}
 function Invoke-DeviceSelectorAuto([scriptblock]$log) {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     if (-not ('PM' -as [type])) { Add-Type $pmCs }
@@ -1238,7 +1266,10 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     & $log "  config.txt ecrit, preset : $(Split-Path $t.Path -Leaf)"
 
     Step "Activation d'Equalizer APO et nettoyage"
-    try { [void](Invoke-DeviceSelectorAuto $log) } catch { & $log "  Device Selector : $($_.Exception.Message)" }; Sub 0.3
+    # Reglage direct du registre (invisible) ; Device Selector pilote seulement en secours
+    $direct = $false; try { $direct = Enable-EapoDirect $log } catch { & $log "  Reglage direct : $($_.Exception.Message)" }
+    if (-not $direct) { try { [void](Invoke-DeviceSelectorAuto $log) } catch { & $log "  Device Selector : $($_.Exception.Message)" } }
+    Sub 0.3
     Set-Format16 $log; Sub 0.5
     Disable-ExtraDevices $log; Sub 0.65
     # Voicemeeter : entree Art Tune Unified Output, sortie A1 = la sortie par defaut d'avant l'installation
@@ -1362,7 +1393,7 @@ function Test-Integrity {
 $ProgFile = Join-Path $env:TEMP 'TuneManager-progress.json'
 if ($RunRepair) {
     $L = New-Object System.Collections.Generic.List[string]; $lg = { param($m) $L.Add([string]$m); $L | Set-Content "$env:PUBLIC\tm-repair.log" -Encoding UTF8 }
-    try { New-Item -ItemType Directory $InstTemp -Force | Out-Null; [void](Set-CableEndpoints $lg); Write-StarterConfig (Find-CableEndpoints); [void](Invoke-DeviceSelectorAuto $lg); Set-Format16 $lg; Disable-ExtraDevices $lg; & $lg "FIN" } catch { & $lg "ERREUR : $($_.Exception.Message)" }
+    try { New-Item -ItemType Directory $InstTemp -Force | Out-Null; [void](Set-CableEndpoints $lg); Write-StarterConfig (Find-CableEndpoints); if (-not (Enable-EapoDirect $lg)) { [void](Invoke-DeviceSelectorAuto $lg) }; Set-Format16 $lg; Disable-ExtraDevices $lg; & $lg "FIN" } catch { & $lg "ERREUR : $($_.Exception.Message)" }
     exit
 }
 if ($RunInstall -or $RunUninstall) {
