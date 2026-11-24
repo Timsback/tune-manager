@@ -1402,7 +1402,7 @@ function Show-Msg([string]$t, [string]$btn = 'OK', [string]$icon = 'Information'
     $bc = New-Object Windows.Media.BrushConverter
     $parts = $t -split "`n", 2
     if ($parts.Count -gt 1 -and $parts[0].Length -le 70) { $ttl = $parts[0]; $body = $parts[1].Trim() } else { $ttl = 'Tune Manager'; $body = $t }
-    $w.FindName('Ttl').Text = $ttl; $w.FindName('Msg').Text = $body
+    $w.FindName('Ttl').Text = $ttl; $w.FindName('Msg').Text = ($body -replace "`r?`n", "`n`n")
     if (-not $body) { $w.FindName('Msg').Visibility = 'Collapsed' }
     $ico = $w.FindName('Ico'); $it = $w.FindName('IcoT')
     if ($icon -match 'Warning|Error|Exclamation|Stop|Hand') {
@@ -1413,6 +1413,8 @@ function Show-Msg([string]$t, [string]$btn = 'OK', [string]$icon = 'Information'
     $res = @{ V = $(switch ($btn) { 'YesNo' { 'No' } 'YesNoCancel' { 'Cancel' } 'OKCancel' { 'Cancel' } default { 'OK' } }) }
     $def = @{ Yes = 'Oui'; No = 'Non'; Cancel = 'Annuler'; OK = 'OK' }
     $order = switch ($btn) { 'YesNo' { @('No', 'Yes') } 'YesNoCancel' { @('Cancel', 'No', 'Yes') } 'OKCancel' { @('Cancel', 'OK') } default { @('OK') } }
+    # Trois boutons aux libelles longs : la fenetre s'elargit pour qu'aucun ne soit coupe
+    $w.Width = [Math]::Max(520.0, 140.0 + (($order | ForEach-Object { $(if ($labels.ContainsKey($_)) { $labels[$_] } else { $def[$_] }).Length }) | Measure-Object -Sum).Sum * 9.0 + 60.0 * $order.Count)
     foreach ($k in $order) {
         $b = New-Object Windows.Controls.Button
         $b.Content = if ($labels.ContainsKey($k)) { $labels[$k] } else { $def[$k] }
