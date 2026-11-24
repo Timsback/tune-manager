@@ -1036,7 +1036,49 @@ function Invoke-DeviceSelectorAuto([scriptblock]$log) {
     [bool]($plus -and $plus.Eapo)
 }
 
+# Reglages par defaut que HeSuVi.exe ecrit a son premier lancement (generiques, aucun peripherique).
+# Les ecrire nous-memes evite de lancer HeSuVi, qui ouvrirait sa fenetre et sa page web.
+$HeSuViDefaults = [ordered]@{
+    'cfact.txt' = @('Eval: usecf=false')
+    'cfmaster.txt' = @('Copy: LCF=1.00*LCF RCF=1.00*RCF')
+    'conn.txt' = @('Copy: L=LVI R=RVI SL=0.0 SR=0.0 C=0.0 SUB=0.0 RL=0.0 RR=0.0', '# Copy: L=LVI R=RVI SL=LVI SR=RVI C=LVI SUB=RVI RL=LVI RR=RVI')
+    'conv.txt' = @('Convolution: hrir\sonic-.wav')
+    'conv44.txt' = @('Convolution: hrir\44\sonic-.wav')
+    'crofe.txt' = @('Eval: cffq=700; dshb=3; xatt=-9; xdel=18; xshd=-10; xmet=false')
+    'deact.txt' = @('Eval: active=true')
+    'devna.txt' = @('Eval: device=""')
+    'eocc.txt' = @('Eval: enough=true')
+    'eqb.txt' = @('#1')
+    'eqc.txt' = @('#1')
+    'eqf.txt' = @('#1')
+    'eqs.txt' = @('#1')
+    'gain.txt' = @('Copy: L=-0dB*L R=-0dB*R C=-0dB*C SUB=-0dB*SUB RL=-0dB*RL RR=-0dB*RR SL=-0dB*SL SR=-0dB*SR')
+    'incc.txt' = @('Eval: fakeChannelCount=inputChannelCount')
+    'lfc.txt' = @('Copy: CVI=1.00*CVI+2.00*SUBVI')
+    'master.txt' = @('Copy: LVI=1.00*LVI RVI=1.00*RVI')
+    'matrix.txt' = @('Copy: L=0.5*L R=0.5*R C=0.2*L+0.2*R SUB=0.0 RL=0.3*L+-0.2*R RR=-0.2*L+0.3*R SL=0.45*L+-0.25*R SR=-0.25*L+0.45*R')
+    'matrix5.1.txt' = @('Copy: RL=5 RR=6 SL=0.0 SR=0.0')
+    'mix.txt' = @('Copy: LVI=1.00*L0+1.00*SL0+1.00*RL0+C0+1.00*L1+1.00*SL1+1.00*RL1 RVI=1.00*R1+1.00*SR1+1.00*RR1+1.00*R0+1.00*SR0+1.00*RR0+C1')
+    'move.txt' = @('Copy: LVI=1.00*L+0.00*SL RVI=1.00*R+0.00*SR CVI=0.00*L+0.00*R+C RLVI=1.00*RL+0.00*RR+0.00*SL SUBVI=SUB RRVI=0.00*RL+1.00*RR+0.00*SR SLVI=0.00*L+0.00*RL+1.00*SL SRVI=0.00*R+0.00*RR+1.00*SR')
+    'postlude.txt' = @('# Include: ')
+    'prelude.txt' = @('# Include: ')
+}
+# 7-Zip temporaire (extrait du MSI officiel, rien n'est installe) pour deballer ReaPlugs et HeSuVi sans leurs fenetres
+function Get-SevenZip {
+    $zd = Join-Path $InstTemp '7z'
+    $z = Get-ChildItem $zd -Recurse -Filter 7z.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+    if ($z) { return $z }
+    $page = (Invoke-WebRequest 'https://www.7-zip.org/download.html' -UseBasicParsing -TimeoutSec 30).Content
+    $msi = [regex]::Match($page, 'a/7z\d+-x64\.msi').Value; if (-not $msi) { $msi = 'a/7z2301-x64.msi' }
+    $zm = Join-Path $InstTemp '7z.msi'
+    Get-File "https://www.7-zip.org/$msi" $zm $null $script:__log '7-Zip (outil temporaire)' | Out-Null
+    Start-Process msiexec.exe "/a `"$zm`" /qn TARGETDIR=`"$zd`"" -Wait -WindowStyle Hidden
+    $z = Get-ChildItem $zd -Recurse -Filter 7z.exe | Select-Object -First 1 -ExpandProperty FullName
+    if (-not $z) { throw "7-Zip introuvable" }
+    $z
+}
 function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
+    $script:__log = $log
     New-Item -ItemType Directory $InstTemp -Force | Out-Null
     $step = 0; $total = 10
     # Step : debut d'une etape (10 % chacune) ; Sub : vraie avancee a l'interieur de l'etape (0..1)
@@ -1086,12 +1128,7 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
         # Extraction directe des fichiers (identiques a l'installateur) : pas de fenetre ni de page web
         $ok = $false
         try {
-            $page = (Invoke-WebRequest 'https://www.7-zip.org/download.html' -UseBasicParsing -TimeoutSec 30).Content
-            $msi = [regex]::Match($page, 'a/7z\d+-x64\.msi').Value; if (-not $msi) { $msi = 'a/7z2301-x64.msi' }
-            $zm = Join-Path $InstTemp '7z.msi'; $zd = Join-Path $InstTemp '7z'
-            Get-File "https://www.7-zip.org/$msi" $zm $null $log '7-Zip (outil temporaire)' | Out-Null
-            Start-Process msiexec.exe "/a `"$zm`" /qn TARGETDIR=`"$zd`"" -Wait -WindowStyle Hidden; Sub 0.35
-            $z = Get-ChildItem $zd -Recurse -Filter 7z.exe | Select-Object -First 1 -ExpandProperty FullName
+            $z = Get-SevenZip; Sub 0.35
             $out = Join-Path $InstTemp 'reaplugs'
             & $z x $f.ReaPlugs "-o$out" -y | Out-Null; Sub 0.65
             $dst = "$env:ProgramFiles\VSTPlugins\ReaPlugs"; New-Item -ItemType Directory $dst -Force | Out-Null
@@ -1125,9 +1162,24 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
 
     Step "Installation de HeSuVi"
     if ($needHe) {
-        $rc = Wait-ProcAuto (Start-Process $f.HeSuVi '-y' -PassThru) 180 $log
-        Start-Sleep 2; Get-Process HeSuVi* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        & $log $(if (Test-Path "$Root\HeSuVi") { "  HeSuVi installe" } else { "  HeSuVi non installe (inutile pour les presets 16ch comme MW4)" })
+        # Extraction directe : l'installateur lance setup.cmd (fenetre noire) qui copie le dossier HeSuVi,
+        # cree un raccourci puis ouvre HeSuVi et sa page web. On fait la copie et le raccourci, sans rien ouvrir.
+        $ok = $false
+        try {
+            $z = Get-SevenZip; Sub 0.3
+            & $z x $f.HeSuVi 'HeSuVi\*' "-o$Root" -y | Out-Null; Sub 0.85
+            $ok = Test-Path "$Root\HeSuVi\hesuvi.txt"
+            if ($ok) { foreach ($k in $HeSuViDefaults.Keys) { $t = Join-Path "$Root\HeSuVi" $k; if (-not (Test-Path $t)) { [IO.File]::WriteAllText($t, ($HeSuViDefaults[$k] -join "`r`n")) } } }
+            if ($ok) {
+                $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\HeSuVi'; New-Item -ItemType Directory $sm -Force | Out-Null
+                $s = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $sm 'HeSuVi.lnk')); $s.TargetPath = "$Root\HeSuVi\HeSuVi.exe"; $s.Save()
+            }
+        } catch { & $log "  Extraction impossible ($($_.Exception.Message)), installation classique" }
+        if (-not $ok) {
+            $rc = Wait-ProcAuto (Start-Process $f.HeSuVi '-y' -PassThru) 180 $log
+            Start-Sleep 2; Get-Process HeSuVi* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+        & $log $(if (Test-Path "$Root\HeSuVi") { "  HeSuVi installe (sans fenetre)" } else { "  HeSuVi non installe (inutile pour les presets 16ch comme MW4)" })
     } else { & $log "  Deja installe" }
 
     Step "Bibliotheque ArtTuneDB et moteur ATK"
@@ -2546,9 +2598,18 @@ $timer.Add_Tick({
         elseif ($script:jobKind -eq 'install') {
             $ui.InstTitle.Text = 'Installation termin&#233;e' -replace '&#233;', [char]0xE9
             try { Load-Presets; Update-Side; Show-Diag } catch { $script:loading = $false }
-            Show-Msg "Installation terminée`nDernière étape manuelle : le Device Selector va s'ouvrir. Coche « Art Tune + », coche « Troubleshooting options », choisis « LFX/GFX », puis OK." | Out-Null
-            $env:QT_PLUGIN_PATH = "C:\Program Files\EqualizerAPO\qt"; Start-Process "C:\Program Files\EqualizerAPO\DeviceSelector.exe" -WorkingDirectory "C:\Program Files\EqualizerAPO"
-            Show-Page 1
+            # Le Device Selector est regle automatiquement a l'etape 10 : on ne l'ouvre que si Equalizer APO
+            # n'est toujours pas actif sur Art Tune + (reglage automatique rate)
+            $eapoOk = $false
+            try { $ce = Find-CableEndpoints; $plus = Get-Endpoints | Where-Object { $_.Id -eq $ce.Render16 } | Select-Object -First 1; $eapoOk = [bool]($plus -and $plus.Eapo) } catch {}
+            if ($eapoOk) {
+                Show-Msg "Installation terminée`nTout est prêt : Equalizer APO est activé sur Art Tune +. Choisis ou crée ton profil dans l'onglet Profils." | Out-Null
+                Show-Page 3
+            } else {
+                Show-Msg "Installation terminée`nUne dernière étape manuelle : le Device Selector va s'ouvrir. Coche « Art Tune + », coche « Troubleshooting options », choisis « LFX/GFX », puis OK." 'OK' 'Warning' | Out-Null
+                $env:QT_PLUGIN_PATH = "C:\Program Files\EqualizerAPO\qt"; Start-Process "C:\Program Files\EqualizerAPO\DeviceSelector.exe" -WorkingDirectory "C:\Program Files\EqualizerAPO"
+                Show-Page 1
+            }
         } elseif ($script:removeAppAfter -and -not $p.Error) {
             # Chaine retiree : on retire maintenant le logiciel lui-meme (raccourcis, dossier, entree Applications)
             $ui.InstTitle.Text = 'D' + [char]0xE9 + 'sinstallation de Tune Manager...'
