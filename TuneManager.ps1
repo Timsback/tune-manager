@@ -1039,7 +1039,9 @@ function Invoke-DeviceSelectorAuto([scriptblock]$log) {
 function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     New-Item -ItemType Directory $InstTemp -Force | Out-Null
     $step = 0; $total = 10
-    function Step($msg) { $script:__s++; & $progress ([int](100 * $script:__s / 10)) $msg; & $log "[$($script:__s)/10] $msg" }
+    # Step : debut d'une etape (10 % chacune) ; Sub : vraie avancee a l'interieur de l'etape (0..1)
+    function Step($msg) { $script:__s++; $script:__m = $msg; & $progress ([int](10 * ($script:__s - 1))) $msg; & $log "[$($script:__s)/10] $msg" }
+    function Sub([double]$f) { & $progress ([int](10 * ($script:__s - 1) + 10 * [Math]::Min(0.99, $f))) $script:__m }
     $script:__s = 0
     Get-Process voicemeeter*, Editor, DeviceSelector -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     # Memorise la vraie sortie par defaut AVANT que les cables virtuels ne la remplacent
@@ -1056,15 +1058,16 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     $needVm = -not (Test-Path "$VmDir\voicemeeter_x64.exe")
     $needRea = @(Get-ChildItem "$env:ProgramFiles\VSTPlugins\ReaPlugs\*.dll" -ErrorAction SilentlyContinue).Count -lt 5
     $needHe = -not (Test-Path "$Root\HeSuVi")
-    if ($needCable) { Get-File 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip' $f.VBCable $null $log 'VB-CABLE' }
-    if ($needVm)    { Get-File (Get-VoicemeeterUrl) $f.Voicemeeter $null $log 'Voicemeeter' }
-    if ($needRea)   { Get-File 'https://www.reaper.fm/reaplugs/reaplugs236_x64-install.exe' $f.ReaPlugs $null $log 'ReaPlugs' }
-    Get-File 'https://cdn.artiswar.io/other-installers/EqualizerAPO-x64-1.4.2.exe' $f.EAPO 'https://sourceforge.net/projects/equalizerapo/files/1.4/EqualizerAPO64-1.4.exe/download' $log 'Equalizer APO'
+    $nDl = 1 + [int]$needCable + [int]$needVm + [int]$needRea + [int]$needHe; $iDl = 0; Sub 0.03
+    if ($needCable) { Get-File 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip' $f.VBCable $null $log 'VB-CABLE'; $iDl++; Sub ($iDl / $nDl) }
+    if ($needVm)    { Get-File (Get-VoicemeeterUrl) $f.Voicemeeter $null $log 'Voicemeeter'; $iDl++; Sub ($iDl / $nDl) }
+    if ($needRea)   { Get-File 'https://www.reaper.fm/reaplugs/reaplugs236_x64-install.exe' $f.ReaPlugs $null $log 'ReaPlugs'; $iDl++; Sub ($iDl / $nDl) }
+    Get-File 'https://cdn.artiswar.io/other-installers/EqualizerAPO-x64-1.4.2.exe' $f.EAPO 'https://sourceforge.net/projects/equalizerapo/files/1.4/EqualizerAPO64-1.4.exe/download' $log 'Equalizer APO'; $iDl++; Sub ($iDl / $nDl)
     if ($needHe)    { Get-File 'https://cdn.artiswar.io/other-installers/HeSuVi_2.0.0.1.exe' $f.HeSuVi 'https://sourceforge.net/projects/hesuvi/files/HeSuVi_2.0.0.1.exe/download' $log 'HeSuVi' }
 
     Step "Installation de VB-CABLE (Windows peut demander d'autoriser le pilote)"
     if ($needCable) {
-        $x = Join-Path $InstTemp 'vbcable'; Expand-Archive $f.VBCable $x -Force
+        $x = Join-Path $InstTemp 'vbcable'; Expand-Archive $f.VBCable $x -Force; Sub 0.3
         $exe = Get-ChildItem $x -Recurse -Filter VBCABLE_Setup_x64.exe | Select-Object -First 1
         $rc = Wait-ProcAuto (Start-Process $exe.FullName '-i -h' -PassThru) 240 $log
         & $log "  VB-CABLE : code $rc"
@@ -1072,7 +1075,7 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
 
     Step "Installation de Voicemeeter"
     if ($needVm) {
-        $x = Join-Path $InstTemp 'vm'; Expand-Archive $f.Voicemeeter $x -Force
+        $x = Join-Path $InstTemp 'vm'; Expand-Archive $f.Voicemeeter $x -Force; Sub 0.3
         $exe = Get-ChildItem $x -Recurse -Filter '*Setup*.exe' | Select-Object -First 1
         $rc = Wait-ProcAuto (Start-Process $exe.FullName '-i -h' -PassThru) 180 $log
         & $log "  Voicemeeter : code $rc"
@@ -1087,10 +1090,10 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
             $msi = [regex]::Match($page, 'a/7z\d+-x64\.msi').Value; if (-not $msi) { $msi = 'a/7z2301-x64.msi' }
             $zm = Join-Path $InstTemp '7z.msi'; $zd = Join-Path $InstTemp '7z'
             Get-File "https://www.7-zip.org/$msi" $zm $null $log '7-Zip (outil temporaire)' | Out-Null
-            Start-Process msiexec.exe "/a `"$zm`" /qn TARGETDIR=`"$zd`"" -Wait -WindowStyle Hidden
+            Start-Process msiexec.exe "/a `"$zm`" /qn TARGETDIR=`"$zd`"" -Wait -WindowStyle Hidden; Sub 0.35
             $z = Get-ChildItem $zd -Recurse -Filter 7z.exe | Select-Object -First 1 -ExpandProperty FullName
             $out = Join-Path $InstTemp 'reaplugs'
-            & $z x $f.ReaPlugs "-o$out" -y | Out-Null
+            & $z x $f.ReaPlugs "-o$out" -y | Out-Null; Sub 0.65
             $dst = "$env:ProgramFiles\VSTPlugins\ReaPlugs"; New-Item -ItemType Directory $dst -Force | Out-Null
             Get-ChildItem $out -Recurse -File | Where-Object { $_.Name -notmatch '^reastream-standalone-\d+\.dll$|\.nsis$' } | ForEach-Object {
                 $rel = $_.FullName.Substring($out.Length + 1); $t = Join-Path $dst $rel
@@ -1107,10 +1110,11 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     # L'installateur ouvre le Device Selector a la fin : on le laisse ouvert pour l'etape 2
     for ($i = 0; $i -lt 240 -and -not $p.HasExited; $i++) {
         if (Get-Process DeviceSelector -ErrorAction SilentlyContinue) { break }
+        if ($i % 2 -eq 0) { Sub ([Math]::Min(0.8, $i / 100)) }
         Start-Sleep -Milliseconds 500
     }
     Get-Process DeviceSelector -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    [void]$p.WaitForExit(60000)
+    [void]$p.WaitForExit(60000); Sub 0.85
     if (-not (Test-Path $Root)) { throw "Equalizer APO ne s'est pas installe." }
     New-Item -ItemType Directory $DB -Force | Out-Null
     Set-Content (Join-Path $DB 'ArtIsWar.url') "[InternetShortcut]`r`nURL=https://artiswar.io"
@@ -1127,22 +1131,22 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     } else { & $log "  Deja installe" }
 
     Step "Bibliotheque ArtTuneDB et moteur ATK"
-    $rel = Get-RemoteRelease; if (-not $rel) { throw "Impossible de joindre GitHub / artiswar.io pour la bibliotheque." }
+    $rel = Get-RemoteRelease; if (-not $rel) { throw "Impossible de joindre GitHub / artiswar.io pour la bibliotheque." }; Sub 0.15
     Update-Library $rel $log
 
     Step "HRIR"
     $h = Join-Path $Root 'HeSuVi\hrir'; New-Item -ItemType Directory "$h\44" -Force | Out-Null
     foreach ($n in 'EAC_Default', 'EAC_Refined') {
         try { Invoke-WebRequest "https://cdn.artiswar.io/HeSuVi/hrir/$n.wav" -OutFile "$h\$n.wav" -UseBasicParsing -TimeoutSec 60
-              Invoke-WebRequest "https://cdn.artiswar.io/HeSuVi/hrir/44/$n.wav" -OutFile "$h\44\$n.wav" -UseBasicParsing -TimeoutSec 60; & $log "  $n OK" }
+              Invoke-WebRequest "https://cdn.artiswar.io/HeSuVi/hrir/44/$n.wav" -OutFile "$h\44\$n.wav" -UseBasicParsing -TimeoutSec 60; & $log "  $n OK"; Sub $(if ($n -eq 'EAC_Default') { 0.5 } else { 0.95 }) }
         catch { & $log "  $n : echec ($($_.Exception.Message))" }
     }
 
     Step "Configuration des peripheriques audio"
     Sync-PersonalEq
-    $e = Set-CableEndpoints $log
+    $e = Set-CableEndpoints $log; Sub 0.4
     $e = Find-CableEndpoints
-    Write-StarterConfig $e
+    Write-StarterConfig $e; Sub 0.6
     if (-not (Test-Path $BoostF)) { [IO.File]::WriteAllText($BoostF, "# ArtTuneDB Output Boost -- set your dB below and save. 0 dB = off.`r`n# config.txt includes this last on every chain; E-APO reloads it live.`r`nPreamp: 0 dB`r`n") }
     $st = Get-State
     $g, $v = if ($st.Game) { $st.Game -split '\|' } else { 'MW4', 'V1' }
@@ -1150,9 +1154,9 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     & $log "  config.txt ecrit, preset : $(Split-Path $t.Path -Leaf)"
 
     Step "Activation d'Equalizer APO et nettoyage"
-    try { [void](Invoke-DeviceSelectorAuto $log) } catch { & $log "  Device Selector : $($_.Exception.Message)" }
-    Set-Format16 $log
-    Disable-ExtraDevices $log
+    try { [void](Invoke-DeviceSelectorAuto $log) } catch { & $log "  Device Selector : $($_.Exception.Message)" }; Sub 0.3
+    Set-Format16 $log; Sub 0.5
+    Disable-ExtraDevices $log; Sub 0.65
     # Voicemeeter : entree Art Tune Unified Output, sortie A1 = la sortie par defaut d'avant l'installation
     try {
         if (Test-Path (Join-Path $DB '.')) { $st = Get-State; if ($defOut) { $st['VmOut'] = $defOut; Save-State $st } elseif ($st.VmOut) { $defOut = $st.VmOut } }
@@ -1225,6 +1229,10 @@ function Uninstall-Silent([scriptblock]$log, [scriptblock]$progress) {
     }
     Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Voicemeeter' -ErrorAction SilentlyContinue
     Remove-Item 'HKLM:\SOFTWARE\EqualizerAPO' -Recurse -Force -ErrorAction SilentlyContinue
+    # Reglages Voicemeeter / VB-Audio : sinon une reinstallation reprend l'ancienne configuration
+    foreach ($k in 'HKLM:\SOFTWARE\VB-Audio', 'HKLM:\SOFTWARE\WOW6432Node\VB-Audio', 'HKCU:\Software\VB-Audio') {
+        if (Test-Path $k) { Remove-Item $k -Recurse -Force -ErrorAction SilentlyContinue; & $log "Supprime : $k" }
+    }
     # Entrees "Programmes installes" orphelines (si un desinstalleur a echoue et que son dossier n'existe plus)
     foreach ($k in Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue) {
         $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
@@ -1271,7 +1279,7 @@ if ($RunInstall -or $RunUninstall) {
     $script:P = @{ Pct = 0; Msg = 'Demarrage'; Step = 0; Done = $false; Error = $null; Log = New-Object System.Collections.Generic.List[string] }
     function Save-P { try { ($script:P | ConvertTo-Json -Depth 3 -Compress) | Set-Content $ProgFile -Encoding UTF8 } catch {} }
     $lg = { param($m) $script:P.Log.Add([string]$m); Save-P }
-    $pg = { param($pct, $msg) $script:P.Pct = $pct; $script:P.Msg = $msg; $script:P.Step = [int][Math]::Ceiling($pct / 10); Save-P }
+    $pg = { param($pct, $msg) $script:P.Pct = $pct; $script:P.Msg = $msg; $script:P.Step = $(if ($script:__s) { [int]$script:__s } else { [int][Math]::Ceiling($pct / 10) }); Save-P }
     Save-P
     try { if ($RunInstall) { Install-Silent $lg $pg | Out-Null } else { Uninstall-Silent $lg $pg | Out-Null } }
     catch { $script:P.Error = $_.Exception.Message; $script:P.Log.Add("ERREUR : $($_.Exception.Message)") }
@@ -1374,6 +1382,10 @@ if ($InstallApp) {
 if ($RemoveApp) {
     $r = Show-Msg "Désinstaller Tune Manager ?`n`nOui : désinstaller aussi toute la chaîne audio (Equalizer APO, Voicemeeter, VB-CABLE, ReaPlugs, bibliothèque).`nNon : retirer seulement le logiciel Tune Manager et garder le son tel quel." 'YesNoCancel' 'Question'
     if ($r -eq 'Cancel') { exit }
+    $wipe = $false
+    if ($r -eq 'Yes') {
+        $wipe = (Show-Msg "Supprimer aussi tes EQ personnels et tes préférences (C:\Users\Public\TuneManager) ?`n`nOui : nettoyage complet, rien ne reste.`nNon : ils seront retrouvés à la prochaine installation." 'YesNo' 'Question') -eq 'Yes'
+    }
     try {
         Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | ForEach-Object {
             try { if ((Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -match 'TuneManager\.ps1') { Stop-Process $_ -Force } } catch {} }
@@ -1385,9 +1397,15 @@ if ($RemoveApp) {
         Register-StartupTask $false; Register-UpdateTask $false
         foreach ($l in (Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Tune Manager.lnk'), (Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Tune Manager.lnk')) { Remove-Item $l -Force -ErrorAction SilentlyContinue }
         Remove-Item $AppUninst -Recurse -Force -ErrorAction SilentlyContinue
+        # Jeton GitHub et donnees propres a Tune Manager dans le profil de chaque utilisateur
+        foreach ($u in Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue) {
+            $d = Join-Path $u.FullName 'AppData\Roaming\TuneManager'
+            if (Test-Path $d) { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        if ($wipe) { Remove-Item (Join-Path $env:PUBLIC 'TuneManager') -Recurse -Force -ErrorAction SilentlyContinue }
         # Le dossier contient ce script en cours d'execution : suppression differee
         Start-Process cmd.exe "/c timeout /t 3 /nobreak >nul & rmdir /s /q `"$AppDir`"" -WindowStyle Hidden
-        Show-Msg $(if ($r -eq 'Yes') { "Tune Manager et la chaîne audio ont été désinstallés. Redémarre le PC pour terminer." } else { "Tune Manager a été désinstallé. Ta configuration audio est conservée (tes profils et EQ restent dans C:\Users\Public\TuneManager)." }) | Out-Null
+        Show-Msg $(if ($r -eq 'Yes') { "Tune Manager et la chaîne audio ont été désinstallés$(if (-not $wipe) { ' (tes EQ et préférences restent dans C:\Users\Public\TuneManager)' }). Redémarre le PC pour terminer." } else { "Tune Manager a été désinstallé. Ta configuration audio est conservée (tes profils et EQ restent dans C:\Users\Public\TuneManager)." }) | Out-Null
     } catch { Show-Msg "Désinstallation incomplète : $($_.Exception.Message)" 'OK' 'Error' | Out-Null }
     exit
 }
@@ -1447,10 +1465,15 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="b" CornerRadius="16" Background="{StaticResource AccentGrad}" Padding="{TemplateBinding Padding}">
-              <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="28" ShadowDepth="0" Opacity="0.55"/></Border.Effect>
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
+            <Grid x:Name="b">
+              <!-- lueur a part : un Effect sur le Border rendrait le texte du bouton flou -->
+              <Border CornerRadius="16" Background="#FF4A2E">
+                <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="28" ShadowDepth="0" Opacity="0.55"/></Border.Effect>
+              </Border>
+              <Border CornerRadius="16" Background="{StaticResource AccentGrad}" Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.9"/></Trigger>
               <Trigger Property="IsPressed" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.75"/></Trigger>
@@ -1528,6 +1551,28 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                 <Setter TargetName="box" Property="BorderThickness" Value="0"/>
                 <Setter TargetName="tick" Property="Visibility" Value="Visible"/>
               </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <!-- Boutons Reduire / Fermer de la barre de titre (sans le survol bleu de Windows) -->
+    <Style x:Key="WinBtn" TargetType="Button">
+      <Setter Property="Width" Value="40"/><Setter Property="Height" Value="32"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Foreground" Value="#9C8D8A"/><Setter Property="FontSize" Value="13"/><Setter Property="Focusable" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" CornerRadius="10" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="#2A1915"/><Setter Property="Foreground" Value="#F5EFEE"/></Trigger>
+              <MultiTrigger>
+                <MultiTrigger.Conditions><Condition Property="Tag" Value="close"/><Condition Property="IsMouseOver" Value="True"/></MultiTrigger.Conditions>
+                <Setter TargetName="b" Property="Background" Value="{StaticResource AccentGrad}"/><Setter Property="Foreground" Value="White"/>
+              </MultiTrigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.75"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -1684,6 +1729,17 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
     </Border.Background>
     <Grid>
       <Rectangle Fill="{StaticResource Dots}" Opacity="0.45" IsHitTestVisible="False"/>
+      <!-- Aura qui suit la souris (deplacee par le code, sous le contenu) -->
+      <Canvas x:Name="AuraLayer" IsHitTestVisible="False">
+        <Ellipse x:Name="Aura" Width="520" Height="520" Opacity="0">
+          <Ellipse.Fill>
+            <RadialGradientBrush>
+              <GradientStop Color="#5CFF5236" Offset="0"/><GradientStop Color="#26FF4A2E" Offset="0.45"/><GradientStop Color="#00FF4A2E" Offset="1"/>
+            </RadialGradientBrush>
+          </Ellipse.Fill>
+          <Ellipse.RenderTransform><TranslateTransform/></Ellipse.RenderTransform>
+        </Ellipse>
+      </Canvas>
       <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition/></Grid.ColumnDefinitions>
         <Grid.RowDefinitions><RowDefinition Height="56"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -1715,14 +1771,12 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
         <!-- Barre de titre -->
         <Grid x:Name="TitleBar" Grid.ColumnSpan="2" Background="Transparent">
           <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="26,0,0,0">
-            <Border Width="12" Height="12" CornerRadius="4" Background="{StaticResource AccentGrad}">
-              <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="14" ShadowDepth="0"/></Border.Effect>
-            </Border>
-            <TextBlock Text="TUNE MANAGER" Margin="12,0,0,0" FontSize="12" FontWeight="Bold" Foreground="#D9CCC9"/>
+            <Image x:Name="TitleLogo" Width="22" Height="22" RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center"/>
+            <TextBlock Text="TUNE MANAGER" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" FontWeight="Bold" Foreground="#D9CCC9"/>
           </StackPanel>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,16,0">
-            <Button x:Name="BtnMin" Content="&#x2014;" Width="40" Height="32" Background="Transparent" Foreground="#9C8D8A" BorderThickness="0" Cursor="Hand"/>
-            <Button x:Name="BtnClose" Content="&#x2715;" Width="40" Height="32" Background="Transparent" Foreground="#9C8D8A" BorderThickness="0" Cursor="Hand"/>
+            <Button x:Name="BtnMin" Style="{StaticResource WinBtn}" Content="&#x2014;"/>
+            <Button x:Name="BtnClose" Style="{StaticResource WinBtn}" Tag="close" Content="&#x2715;" Margin="6,0,0,0"/>
           </StackPanel>
         </Grid>
 
@@ -1732,7 +1786,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
           <RadioButton x:Name="NavCfg" Style="{StaticResource Nav}" Tag="&#x2699;" Content="Configuration" GroupName="nav"/>
           <StackPanel x:Name="CfgSub" Visibility="Collapsed" Margin="26,0,0,6">
             <RadioButton x:Name="Nav0" Style="{StaticResource SubNav}" Content="Installation" GroupName="sub"/>
-            <RadioButton x:Name="Nav1" Style="{StaticResource SubNav}" Content="Windows" GroupName="sub"/>
+            <RadioButton x:Name="Nav1" Style="{StaticResource SubNav}" Content="Diagnostic" GroupName="sub"/>
             <RadioButton x:Name="Nav2" Style="{StaticResource SubNav}" Content="Voicemeeter" GroupName="sub"/>
           </StackPanel>
           <RadioButton x:Name="Nav4" Style="{StaticResource Nav}" Tag="&#x2261;" Content="Param&#xE8;tres" GroupName="nav"/>
@@ -1752,16 +1806,30 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
           <Grid x:Name="Page0">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <StackPanel Margin="0,0,0,18">
-              <TextBlock Text="&#x2014;  CONFIGURATION  &#xB7;  1 / 3" Style="{StaticResource Kicker}"/>
+              <TextBlock Text="&#x2014;  CONFIGURATION" Style="{StaticResource Kicker}"/>
               <TextBlock x:Name="InstTitle" Text="Installation" Style="{StaticResource H1}"/>
               <TextBlock x:Name="InstSub" Text="Installe toute la cha&#xEE;ne audio ArtIsWar en silence : VB-CABLE, Voicemeeter, Equalizer APO, moteur ATK, biblioth&#xE8;que et r&#xE9;glages." Style="{StaticResource Sub}"/>
             </StackPanel>
             <!-- Rangee d'etapes -->
-            <Border Grid.Row="1" Style="{StaticResource Card}" Padding="22,18" Margin="0,0,0,14">
+            <Border x:Name="StepCard" Grid.Row="1" Style="{StaticResource Card}" Padding="22,18" Margin="0,0,0,14">
               <UniformGrid x:Name="StepDots" Rows="1"/>
             </Border>
+            <!-- Chaine deja installee : etat seul, le suivi d'installation n'apparait que pendant une installation -->
+            <Border x:Name="InstDone" Grid.Row="1" Grid.RowSpan="3" Style="{StaticResource Card}" Padding="26,24" VerticalAlignment="Top" Visibility="Collapsed">
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                <Border Width="52" Height="52" CornerRadius="16" Background="{StaticResource AccentGrad}" VerticalAlignment="Top" Margin="0,0,20,0">
+                  <Path Data="M 15,27 L 23,35 L 38,18" Stroke="White" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                </Border>
+                <StackPanel Grid.Column="1">
+                  <TextBlock Text="Cha&#xEE;ne audio install&#xE9;e" FontSize="20" FontWeight="Bold"/>
+                  <TextBlock x:Name="InstDoneSub" Style="{StaticResource Sub}" Margin="0,6,0,0" Text="VB-CABLE, Voicemeeter, Equalizer APO, moteur ATK et biblioth&#xE8;que sont en place."/>
+                  <TextBlock Style="{StaticResource Sub}" FontSize="13" Margin="0,14,0,0" Text="En cas de souci de son, lance d'abord le Diagnostic. R&#xE9;parer r&#xE9;installe toute la cha&#xEE;ne en gardant tes profils."/>
+                </StackPanel>
+              </Grid>
+            </Border>
             <!-- Carte en cours -->
-            <Border Grid.Row="2" Style="{StaticResource Card}" Padding="22" Margin="0,0,0,14">
+            <Border x:Name="ProgCard" Grid.Row="2" Style="{StaticResource Card}" Padding="22" Margin="0,0,0,14">
               <StackPanel>
                 <Grid>
                   <TextBlock x:Name="CurTask" Text="Pr&#xEA;t &#xE0; installer" FontSize="17" FontWeight="SemiBold"/>
@@ -1772,6 +1840,17 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                     <Border x:Name="BarFill" HorizontalAlignment="Left" Width="0" CornerRadius="5" Background="{StaticResource AccentGrad}">
                       <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="14" ShadowDepth="0" Opacity="0.7"/></Border.Effect>
                     </Border>
+                    <!-- reflet qui parcourt la barre pendant l'installation -->
+                    <Canvas x:Name="BarShineHost" HorizontalAlignment="Left" Width="0" ClipToBounds="True" IsHitTestVisible="False">
+                      <Rectangle x:Name="BarShine" Width="140" Height="10" Visibility="Collapsed">
+                        <Rectangle.Fill>
+                          <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                            <GradientStop Color="#00FFFFFF" Offset="0"/><GradientStop Color="#80FFE2D6" Offset="0.5"/><GradientStop Color="#00FFFFFF" Offset="1"/>
+                          </LinearGradientBrush>
+                        </Rectangle.Fill>
+                        <Rectangle.RenderTransform><TranslateTransform/></Rectangle.RenderTransform>
+                      </Rectangle>
+                    </Canvas>
                   </Grid>
                 </Border>
                 <Border x:Name="WarnBanner" Visibility="Collapsed" CornerRadius="10" Background="#3A1410" BorderBrush="#7A2618" BorderThickness="1" Padding="12,8" Margin="0,14,0,0">
@@ -1790,8 +1869,8 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
           <Grid x:Name="Page1" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <StackPanel Margin="0,0,0,20">
-              <TextBlock Text="&#x2014;  CONFIGURATION  &#xB7;  2 / 3" Style="{StaticResource Kicker}"/>
-              <TextBlock Text="Windows" Style="{StaticResource H1}"/>
+              <TextBlock Text="&#x2014;  CONFIGURATION" Style="{StaticResource Kicker}"/>
+              <TextBlock Text="Diagnostic" Style="{StaticResource H1}"/>
               <TextBlock x:Name="DiagSummary" Text="V&#xE9;rification de Windows et d'Equalizer APO." Style="{StaticResource Sub}"/>
             </StackPanel>
             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="DiagList"/></ScrollViewer>
@@ -1807,7 +1886,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
           <Grid x:Name="Page2" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
             <StackPanel Margin="0,0,0,20">
-              <TextBlock Text="&#x2014;  CONFIGURATION  &#xB7;  3 / 3" Style="{StaticResource Kicker}"/>
+              <TextBlock Text="&#x2014;  CONFIGURATION" Style="{StaticResource Kicker}"/>
               <TextBlock Text="Voicemeeter" Style="{StaticResource H1}"/>
               <TextBlock Text="Voicemeeter re&#xE7;oit le son trait&#xE9; (Art Tune Unified Output) et l'envoie &#xE0; ton casque (sortie A1)." Style="{StaticResource Sub}"/>
             </StackPanel>
@@ -1833,13 +1912,16 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
               <TextBlock x:Name="PresetStatus" Text="Un clic sur un profil l'applique en direct sur Art Tune +." Style="{StaticResource Sub}"/>
             </StackPanel>
             <!-- Profil actif -->
+            <!-- Lueur sur un calque separe : un Effect pose sur la carte rasterise tout son contenu (texte flou) -->
+            <Border Grid.Row="1" CornerRadius="20" Background="#160D0C" Margin="0,0,0,22" IsHitTestVisible="False">
+              <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="40" ShadowDepth="0" Opacity="0.18"/></Border.Effect>
+            </Border>
             <Border Grid.Row="1" CornerRadius="20" Padding="26,22" BorderThickness="1" BorderBrush="#5A2A20" Margin="0,0,0,22">
               <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                   <GradientStop Color="#2A1411" Offset="0"/><GradientStop Color="#160D0C" Offset="1"/>
                 </LinearGradientBrush>
               </Border.Background>
-              <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="40" ShadowDepth="0" Opacity="0.18"/></Border.Effect>
               <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel>
@@ -2024,11 +2106,14 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
         </Grid>
         <!-- Fenetre de mise a jour de Tune Manager -->
         <Grid x:Name="UpdOverlay" Grid.RowSpan="3" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#D80B0606">
-          <Border Width="520" CornerRadius="22" BorderBrush="#5A2A20" BorderThickness="1" Padding="34,30" VerticalAlignment="Center" HorizontalAlignment="Center">
+          <Grid Width="520" VerticalAlignment="Center" HorizontalAlignment="Center">
+          <Border CornerRadius="22" Background="#140B0A" IsHitTestVisible="False">
+            <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="60" ShadowDepth="0" Opacity="0.30"/></Border.Effect>
+          </Border>
+          <Border CornerRadius="22" BorderBrush="#5A2A20" BorderThickness="1" Padding="34,30">
             <Border.Background>
               <LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#2A1411" Offset="0"/><GradientStop Color="#140B0A" Offset="1"/></LinearGradientBrush>
             </Border.Background>
-            <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="60" ShadowDepth="0" Opacity="0.30"/></Border.Effect>
             <StackPanel>
               <Border Width="56" Height="56" CornerRadius="18" Background="{StaticResource AccentGrad}" HorizontalAlignment="Left" Margin="0,0,0,20">
                 <Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="28" ShadowDepth="0" Opacity="0.6"/></Border.Effect>
@@ -2043,6 +2128,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
               </StackPanel>
             </StackPanel>
           </Border>
+          </Grid>
         </Grid>
       </Grid>
     </Grid>
@@ -2054,6 +2140,25 @@ $win = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $x
 $ui = @{}
 $xaml.SelectNodes('//*[@*[local-name()="Name"]]') | ForEach-Object { $n = $_.GetAttribute('Name', 'http://schemas.microsoft.com/winfx/2006/xaml'); if ($n) { $ui[$n] = $win.FindName($n) } }
 if (Test-Path "$PSScriptRoot\TuneManager.ico") { try { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]"$PSScriptRoot\TuneManager.ico") } catch {} } elseif (Test-Path "$DB\ArtTuneDB.ico") { try { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]"$DB\ArtTuneDB.ico") } catch {} }
+
+# Aura rouge-orange qui suit la souris ; apparait / disparait en fondu
+function Fade-Aura([double]$to) {
+    $a = New-Object Windows.Media.Animation.DoubleAnimation($to, [Windows.Duration][TimeSpan]::FromMilliseconds(250))
+    $ui.Aura.BeginAnimation([Windows.UIElement]::OpacityProperty, $a)
+}
+$win.Add_MouseMove({
+    $p = $_.GetPosition($ui.AuraLayer)
+    $t = $ui.Aura.RenderTransform; $t.X = $p.X - $ui.Aura.Width / 2; $t.Y = $p.Y - $ui.Aura.Height / 2
+    if ($ui.Aura.Tag -ne 'on') { $ui.Aura.Tag = 'on'; Fade-Aura 1 }
+})
+$win.Add_MouseLeave({ $ui.Aura.Tag = $null; Fade-Aura 0 })
+
+# Logo de l'application dans la barre de titre (plus grande image de l'icone)
+foreach ($f in "$PSScriptRoot\TuneManager.ico", "$DB\ArtTuneDB.ico") {
+    if (Test-Path $f) {
+        try { $dec = New-Object Windows.Media.Imaging.IconBitmapDecoder([Uri]$f, 'None', 'OnLoad'); $ui.TitleLogo.Source = ($dec.Frames | Sort-Object PixelWidth -Descending | Select-Object -First 1); break } catch {}
+    }
+}
 
 $bc = New-Object Windows.Media.BrushConverter
 function Brush($hex) { $bc.ConvertFromString($hex) }
@@ -2189,29 +2294,157 @@ function New-Row($ok, $title, $detail) {
 # ---------------------------------------------------------------- 1. Installation
 $StepNames = @('Telechargement', 'VB-CABLE', 'Voicemeeter', 'ReaPlugs', 'Equalizer APO', 'HeSuVi', 'Bibliotheque', 'HRIR', 'Peripheriques', 'Nettoyage')
 $StepLabels = @('Fichiers', 'VB-CABLE', 'Voicemeeter', 'ReaPlugs', 'E-APO', 'HeSuVi', 'Biblioth&#232;que', 'HRIR', 'P&#233;riph.', 'Finition')
+# Etapes animees : anneau qui tourne sur l'etape en cours, arc = vraie progression de l'etape,
+# retournement 3D + coche a la fin d'une etape, ligne lumineuse vers la suivante, relief de l'etape active.
+$Inv = [Globalization.CultureInfo]::InvariantCulture
+function New-Anim([double]$to, [int]$ms) {
+    $a = New-Object Windows.Media.Animation.DoubleAnimation($to, [Windows.Duration][TimeSpan]::FromMilliseconds($ms))
+    $e = New-Object Windows.Media.Animation.CubicEase; $e.EasingMode = 'EaseOut'; $a.EasingFunction = $e; $a
+}
+function Get-ArcGeometry([double]$f) {
+    if ($f -le 0.001) { return $null }
+    if ($f -ge 0.999) { return New-Object Windows.Media.EllipseGeometry((New-Object Windows.Point(22, 22)), 20, 20) }
+    $a = 2 * [Math]::PI * $f; $x = 22 + 20 * [Math]::Sin($a); $y = 22 - 20 * [Math]::Cos($a)
+    [Windows.Media.Geometry]::Parse([string]::Format($Inv, 'M 22,2 A 20,20 0 {0} 1 {1:0.##},{2:0.##}', $(if ($f -gt 0.5) { 1 } else { 0 }), $x, $y))
+}
 $script:dots = @()
 for ($i = 0; $i -lt 10; $i++) {
-    $sp = New-Object Windows.Controls.StackPanel; $sp.HorizontalAlignment = 'Center'
-    $d = New-Object Windows.Controls.Border; $d.Width = 30; $d.Height = 30; $d.CornerRadius = 15; $d.Background = Brush '#2A1A17'; $d.BorderBrush = Brush '#4A2E29'; $d.BorderThickness = 1.5
+    $cell = New-Object Windows.Controls.StackPanel
+    $top = New-Object Windows.Controls.Grid; $top.Height = 48
+    $top.ColumnDefinitions.Add((New-Object Windows.Controls.ColumnDefinition)); $top.ColumnDefinitions.Add((New-Object Windows.Controls.ColumnDefinition))
+    $lines = @()
+    foreach ($side in 0, 1) {
+        if (($side -eq 0 -and $i -eq 0) -or ($side -eq 1 -and $i -eq 9)) { $lines += , $null; continue }
+        $lg = New-Object Windows.Controls.Grid; $lg.Height = 2; $lg.VerticalAlignment = 'Center'; [Windows.Controls.Grid]::SetColumn($lg, $side)
+        $tr = New-Object Windows.Shapes.Rectangle; $tr.Fill = Brush '#3A2420'
+        $fl = New-Object Windows.Shapes.Rectangle; $fl.Fill = $win.FindResource('AccentGrad'); $fl.RenderTransformOrigin = '0,0.5'
+        $fs = New-Object Windows.Media.ScaleTransform(0, 1); $fl.RenderTransform = $fs
+        $lg.Children.Add($tr) | Out-Null; $lg.Children.Add($fl) | Out-Null; $top.Children.Add($lg) | Out-Null
+        $lines += , $fs
+    }
+    $host_ = New-Object Windows.Controls.Grid; $host_.Width = 44; $host_.Height = 44; [Windows.Controls.Grid]::SetColumnSpan($host_, 2)
+    $host_.RenderTransformOrigin = '0.5,0.5'; $hs = New-Object Windows.Media.ScaleTransform(1, 1); $host_.RenderTransform = $hs
+    $mask = New-Object Windows.Shapes.Ellipse; $mask.Fill = Brush '#1A0F0E'
+    $track = New-Object Windows.Shapes.Ellipse; $track.Stroke = Brush '#3A2420'; $track.StrokeThickness = 3; $track.Margin = '0.5'
+    $arc = New-Object Windows.Shapes.Path; $arc.Stroke = $win.FindResource('AccentGrad'); $arc.StrokeThickness = 3; $arc.StrokeStartLineCap = 'Round'; $arc.StrokeEndLineCap = 'Round'
+    # anneau tournant : un quart de cercle en degrade qui fait le tour
+    $spin = New-Object Windows.Shapes.Path; $spin.Data = [Windows.Media.Geometry]::Parse('M 22,-1 A 23,23 0 0 1 45,22'); $spin.StrokeThickness = 2; $spin.StrokeEndLineCap = 'Round'
+    $sg = New-Object Windows.Media.LinearGradientBrush; $sg.StartPoint = '0,0'; $sg.EndPoint = '1,1'
+    $sg.GradientStops.Add((New-Object Windows.Media.GradientStop([Windows.Media.Color]::FromArgb(0, 255, 82, 54), 0))); $sg.GradientStops.Add((New-Object Windows.Media.GradientStop([Windows.Media.Color]::FromArgb(255, 255, 140, 100), 1)))
+    $spin.Stroke = $sg; $spin.Visibility = 'Hidden'; $rt = New-Object Windows.Media.RotateTransform(0, 22, 22); $spin.RenderTransform = $rt
+    # halo qui respire (calque separe : un Effect sur le disque rendrait le chiffre flou)
+    $glow = New-Object Windows.Shapes.Ellipse; $glow.Width = 32; $glow.Height = 32; $glow.Fill = Brush '#FF4A2E'; $glow.Opacity = 0
+    $ge = New-Object Windows.Media.Effects.DropShadowEffect; $ge.Color = [Windows.Media.Color]::FromRgb(255, 74, 46); $ge.BlurRadius = 22; $ge.ShadowDepth = 0; $glow.Effect = $ge
+    $d = New-Object Windows.Controls.Border; $d.Width = 32; $d.Height = 32; $d.CornerRadius = 16; $d.Background = Brush '#2A1A17'; $d.BorderBrush = Brush '#4A2E29'; $d.BorderThickness = 1.5
+    $d.RenderTransformOrigin = '0.5,0.5'; $flip = New-Object Windows.Media.ScaleTransform(1, 1); $d.RenderTransform = $flip
     $n = New-Object Windows.Controls.TextBlock; $n.Text = "$($i + 1)"; $n.FontSize = 12; $n.FontWeight = 'Bold'; $n.Foreground = Brush '#9C8D8A'; $n.HorizontalAlignment = 'Center'; $n.VerticalAlignment = 'Center'; $d.Child = $n
-    $t = New-Object Windows.Controls.TextBlock; $t.Text = [Net.WebUtility]::HtmlDecode($StepLabels[$i]); $t.FontSize = 11; $t.Foreground = Brush '#9C8D8A'; $t.HorizontalAlignment = 'Center'; $t.Margin = '0,8,0,0'
-    $sp.Children.Add($d) | Out-Null; $sp.Children.Add($t) | Out-Null; $ui.StepDots.Children.Add($sp) | Out-Null
-    $script:dots += , @($d, $n, $t)
+    foreach ($c in $mask, $track, $arc, $spin, $glow, $d) { $host_.Children.Add($c) | Out-Null }
+    $top.Children.Add($host_) | Out-Null
+    $t = New-Object Windows.Controls.TextBlock; $t.Text = [Net.WebUtility]::HtmlDecode($StepLabels[$i]); $t.FontSize = 11; $t.Foreground = Brush '#9C8D8A'; $t.HorizontalAlignment = 'Center'; $t.Margin = '0,6,0,0'
+    $pc = New-Object Windows.Controls.TextBlock; $pc.FontSize = 10.5; $pc.FontWeight = 'Bold'; $pc.Foreground = Brush '#FF7A5C'; $pc.HorizontalAlignment = 'Center'; $pc.Margin = '0,2,0,0'; $pc.Text = ' '
+    $cell.Children.Add($top) | Out-Null; $cell.Children.Add($t) | Out-Null; $cell.Children.Add($pc) | Out-Null
+    $ui.StepDots.Children.Add($cell) | Out-Null
+    $script:dots += , @{ Cell = $cell; Disk = $d; Num = $n; Lbl = $t; Pct = $pc; Arc = $arc; Spin = $spin; Rot = $rt; Glow = $glow; Flip = $flip; Scale = $hs; L = $lines[0]; R = $lines[1]; State = 'todo'; Shown = 0.0; Target = 0.0 }
 }
-function Set-Dots([int]$cur, [bool]$done) {
-    for ($i = 0; $i -lt 10; $i++) {
-        $d, $n, $t = $script:dots[$i]
-        if ($done -or $i -lt $cur - 1) {
-            $d.Background = $win.FindResource('AccentGrad'); $d.BorderThickness = 0; $n.Text = [string][char]0x2713; $n.Foreground = [Windows.Media.Brushes]::White; $t.Foreground = Brush '#F5EFEE'; $d.Effect = $null
-        } elseif ($i -eq $cur - 1) {
-            $d.Background = Brush '#24130F'; $d.BorderBrush = Brush '#FF5236'; $d.BorderThickness = 2; $n.Text = "$($i + 1)"; $n.Foreground = Brush '#FF5236'; $t.Foreground = Brush '#FF7A5C'
-            $sh = New-Object Windows.Media.Effects.DropShadowEffect; $sh.Color = [Windows.Media.Color]::FromRgb(255,74,46); $sh.BlurRadius = 18; $sh.ShadowDepth = 0; $d.Effect = $sh
+
+function Set-DiskLook($s, [string]$state) {
+    $d = $s.Disk; $n = $s.Num
+    switch ($state) {
+        'done'   { $d.Background = $win.FindResource('AccentGrad'); $d.BorderThickness = 0; $n.Text = [string][char]0x2713; $n.FontSize = 15; $n.Foreground = [Windows.Media.Brushes]::White; $s.Lbl.Foreground = Brush '#F5EFEE' }
+        'active' { $d.Background = Brush '#24130F'; $d.BorderBrush = Brush '#FF5236'; $d.BorderThickness = 2; $n.FontSize = 12; $n.Foreground = Brush '#FF5236'; $s.Lbl.Foreground = Brush '#FF7A5C' }
+        default  { $d.Background = Brush '#2A1A17'; $d.BorderBrush = Brush '#4A2E29'; $d.BorderThickness = 1.5; $n.FontSize = 12; $n.Foreground = Brush '#9C8D8A'; $s.Lbl.Foreground = Brush '#9C8D8A' }
+    }
+    if ($state -ne 'done') { $n.Text = "$([array]::IndexOf($script:dots, $s) + 1)" }
+}
+function Set-StepState($s, [string]$state, [bool]$animate) {
+    if ($s.State -eq $state) { return }
+    $prev = $s.State; $s.State = $state
+    $s.Rot.BeginAnimation([Windows.Media.RotateTransform]::AngleProperty, $null)
+    $s.Glow.BeginAnimation([Windows.UIElement]::OpacityProperty, $null); $s.Glow.Opacity = 0
+    if ($state -eq 'active') {
+        $s.Spin.Visibility = 'Visible'
+        $r = New-Object Windows.Media.Animation.DoubleAnimation(0, 360, [Windows.Duration][TimeSpan]::FromSeconds(1.1)); $r.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+        $s.Rot.BeginAnimation([Windows.Media.RotateTransform]::AngleProperty, $r)
+        $g = New-Object Windows.Media.Animation.DoubleAnimation(0.25, 0.75, [Windows.Duration][TimeSpan]::FromSeconds(1.2)); $g.AutoReverse = $true; $g.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+        $s.Glow.BeginAnimation([Windows.UIElement]::OpacityProperty, $g)
+        Set-DiskLook $s 'active'
+    } else {
+        $s.Spin.Visibility = 'Hidden'; $s.Pct.Text = ' '
+    }
+    if ($state -eq 'done') {
+        $s.Target = 1; $s.Shown = 1; $s.Arc.Data = $null
+        if ($animate) {
+            # retournement facon piece : le disque se replie, change de face, puis revient avec un rebond
+            $kf = New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames; $kf.Duration = [TimeSpan]::FromMilliseconds(560)
+            $kf.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame(0, [Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(140))))) | Out-Null
+            $b = New-Object Windows.Media.Animation.BackEase; $b.Amplitude = 0.6; $b.EasingMode = 'EaseOut'
+            $kf.KeyFrames.Add((New-Object Windows.Media.Animation.EasingDoubleKeyFrame(1, [Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(560)), $b))) | Out-Null
+            $s.Flip.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, $kf)
+            # la face change quand le disque est replie (traite par $arcTimer)
+            $script:flipQueue.Add(@{ S = $s; At = [DateTime]::Now.AddMilliseconds(140) })
+            if ($s.R) { $s.R.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-Anim 1 380)) }
+            $k = [array]::IndexOf($script:dots, $s)
+            if ($k -lt 9 -and $script:dots[$k + 1].L) { $a2 = New-Anim 1 380; $a2.BeginTime = [TimeSpan]::FromMilliseconds(330); $script:dots[$k + 1].L.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, $a2) }
         } else {
-            $d.Background = Brush '#2A1A17'; $d.BorderBrush = Brush '#4A2E29'; $d.BorderThickness = 1.5; $n.Text = "$($i + 1)"; $n.Foreground = Brush '#9C8D8A'; $t.Foreground = Brush '#9C8D8A'; $d.Effect = $null
+            $s.Flip.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, $null); $s.Flip.ScaleX = 1; Set-DiskLook $s 'done'
+            if ($s.R) { $s.R.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, $null); $s.R.ScaleX = 1 }
+            $k = [array]::IndexOf($script:dots, $s); if ($k -lt 9 -and $script:dots[$k + 1].L) { $script:dots[$k + 1].L.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, $null); $script:dots[$k + 1].L.ScaleX = 1 }
         }
+    } elseif ($state -eq 'todo') {
+        $s.Target = 0; $s.Shown = 0; $s.Arc.Data = $null; Set-DiskLook $s 'todo'
+        $s.Flip.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, $null); $s.Flip.ScaleX = 1
+        foreach ($l in $s.L, $s.R) { if ($l) { $l.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, $null); $l.ScaleX = 0 } }
     }
 }
-function Set-Bar([int]$pct) { $w = $ui.BarHost.ActualWidth; if ($w -le 0) { $w = 700 }; $ui.BarFill.Width = [Math]::Max(0, [Math]::Min($w, $w * $pct / 100)); $ui.CurPct.Text = "$pct %" }
+# Relief : l'etape active avance au premier plan, celles a venir reculent pendant l'installation
+function Set-Relief($s, [double]$scale, [double]$op) {
+    $s.Scale.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-Anim $scale 300))
+    $s.Scale.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-Anim $scale 300))
+    $s.Cell.BeginAnimation([Windows.UIElement]::OpacityProperty, (New-Anim $op 300))
+}
+# $cur : etape en cours (1..10), $done : tout est fini, $stepPct : avancee reelle de l'etape en cours (0..100)
+function Set-Dots([int]$cur, [bool]$done, [double]$stepPct = 0, [bool]$animate = $true) {
+    $running = $cur -gt 0 -and -not $done
+    for ($i = 0; $i -lt 10; $i++) {
+        $s = $script:dots[$i]
+        $state = if ($done -or $i -lt $cur - 1) { 'done' } elseif ($i -eq $cur - 1) { 'active' } else { 'todo' }
+        Set-StepState $s $state $animate
+        if ($state -eq 'active') { $s.Target = [Math]::Max(0.0, [Math]::Min(1.0, $stepPct / 100.0)) }
+        $sc, $op = if (-not $running) { 1.0, 1.0 } elseif ($state -eq 'active') { 1.18, 1.0 } elseif ($state -eq 'done') { 0.96, 1.0 } else { 0.9, 0.5 }
+        if ($s.RelS -ne $sc -or $s.RelO -ne $op) { $s.RelS = $sc; $s.RelO = $op; Set-Relief $s $sc $op }
+    }
+    if ($running) { Start-Shine } else { Stop-Shine }
+}
+# Arc de l'etape en cours : avance en douceur vers la vraie valeur
+$arcTimer = New-Object Windows.Threading.DispatcherTimer; $arcTimer.Interval = [TimeSpan]::FromMilliseconds(30)
+$script:flipQueue = New-Object System.Collections.ArrayList
+$arcTimer.Add_Tick({
+    for ($q = $script:flipQueue.Count - 1; $q -ge 0; $q--) {
+        $it = $script:flipQueue[$q]
+        if ([DateTime]::Now -ge $it.At) { if ($it.S.State -eq 'done') { Set-DiskLook $it.S 'done' }; $script:flipQueue.RemoveAt($q) }
+    }
+    foreach ($s in $script:dots) {
+        if ($s.State -ne 'active') { continue }
+        $diff = $s.Target - $s.Shown
+        if ([Math]::Abs($diff) -gt 0.002) { $s.Shown += $diff * 0.12 } else { $s.Shown = $s.Target }
+        $s.Arc.Data = Get-ArcGeometry $s.Shown
+        $s.Pct.Text = "$([int]($s.Shown * 100)) %"
+    }
+})
+$arcTimer.Start()
+function Start-Shine {
+    if ($ui.BarShine.Visibility -eq 'Visible') { return }
+    $ui.BarShine.Visibility = 'Visible'
+    $a = New-Object Windows.Media.Animation.DoubleAnimation(-140, 900, [Windows.Duration][TimeSpan]::FromSeconds(1.8)); $a.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+    $ui.BarShine.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, $a)
+}
+function Stop-Shine { $ui.BarShine.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, $null); $ui.BarShine.Visibility = 'Collapsed' }
+function Set-Bar([int]$pct) {
+    $w = $ui.BarHost.ActualWidth; if ($w -le 0) { $w = 700 }
+    $to = [Math]::Max(0, [Math]::Min($w, $w * $pct / 100))
+    $ui.BarFill.BeginAnimation([Windows.FrameworkElement]::WidthProperty, (New-Anim $to 450))
+    $ui.BarShineHost.Width = $to; $ui.CurPct.Text = "$pct %"
+}
 
 $script:job = $null; $script:jobKind = $null
 $timer = New-Object Windows.Threading.DispatcherTimer; $timer.Interval = [TimeSpan]::FromMilliseconds(600)
@@ -2219,10 +2452,11 @@ $timer.Add_Tick({
     if (-not (Test-Path $ProgFile)) { return }
     try { $p = Get-Content $ProgFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return }
     $ui.CurTask.Text = $p.Msg; Set-Bar ([int]$p.Pct)
-    if ($script:jobKind -eq 'install') { Set-Dots ([int]$p.Step) ([bool]$p.Done -and -not $p.Error) }
+    if ($script:jobKind -eq 'install') { $stp = [int]$p.Step; Set-Dots $stp ([bool]$p.Done -and -not $p.Error) $(if ($stp -gt 0) { ([double]$p.Pct - 10 * ($stp - 1)) * 10 } else { 0 }) }
+    else { Start-Shine }
     $txt = ($p.Log -join "`r`n"); if ($ui.InstLog.Text -ne $txt) { $ui.InstLog.Text = $txt; $ui.InstLog.ScrollToEnd() }
     if ($p.Done -or ($script:job -and $script:job.HasExited)) {
-        $timer.Stop(); $ui.WarnBanner.Visibility = 'Collapsed'
+        $timer.Stop(); $ui.WarnBanner.Visibility = 'Collapsed'; Stop-Shine
         $ui.BtnInstall.IsEnabled = $true; $ui.BtnUninstall.IsEnabled = $true
         if ($p.Error) { $ui.InstTitle.Text = 'Installation interrompue'; $ui.CurTask.Text = "Erreur : $($p.Error)"; $ui.CurTask.Foreground = Brush '#FF5236' }
         elseif ($script:jobKind -eq 'install') {
@@ -2231,7 +2465,7 @@ $timer.Add_Tick({
             [Windows.MessageBox]::Show("Installation terminee.`n`nDerniere etape manuelle : le Device Selector va s'ouvrir.`nCoche 'Art Tune +', coche 'Troubleshooting options', choisis 'LFX/GFX', puis OK.", "Tune Manager") | Out-Null
             $env:QT_PLUGIN_PATH = "C:\Program Files\EqualizerAPO\qt"; Start-Process "C:\Program Files\EqualizerAPO\DeviceSelector.exe" -WorkingDirectory "C:\Program Files\EqualizerAPO"
             Show-Page 1
-        } else { $ui.InstTitle.Text = 'D' + [char]0xE9 + 'sinstallation termin' + [char]0xE9 + 'e'; Update-Side }
+        } else { $ui.InstTitle.Text = 'D' + [char]0xE9 + 'sinstallation termin' + [char]0xE9 + 'e'; Update-Side; $ui.Nav0.Content = 'Installation'; $ui.BtnInstall.Content = 'Installer' }
     }
 })
 function Start-Job2([string]$kind) {
@@ -2244,10 +2478,27 @@ function Start-Job2([string]$kind) {
     $script:job = Start-Process powershell "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`" $sw" -WindowStyle Hidden -PassThru
     $timer.Start()
 }
-$ui.BtnInstall.Add_Click({ Start-Job2 'install' })
+# Chaine deja en place : page "Chaine audio" (etat + Reparer) au lieu du parcours d'installation
+function Test-ChainInstalled { (Test-Path $Lib) -and (Test-Path (Join-Path $VmDir 'voicemeeter*.exe')) -and (Test-Path "$env:ProgramFiles\EqualizerAPO") }
+function Update-InstallView {
+    if ($script:jobKind -and $timer.IsEnabled) { return }
+    $inst = Test-ChainInstalled
+    $v = if ($inst) { 'Collapsed' } else { 'Visible' }
+    $ui.StepCard.Visibility = $v; $ui.ProgCard.Visibility = $v; $ui.InstLog.Visibility = $v
+    $ui.InstDone.Visibility = $(if ($inst) { 'Visible' } else { 'Collapsed' })
+    $ui.Nav0.Content = if ($inst) { 'Cha' + [char]0xEE + 'ne audio' } else { 'Installation' }
+    $ui.InstTitle.Text = $ui.Nav0.Content
+    $ui.BtnInstall.Content = if ($inst) { 'R' + [char]0xE9 + 'parer' } else { 'Installer' }
+    $ui.InstSub.Text = if ($inst) { 'Tout est install' + [char]0xE9 + '. Tes profils s''appliquent depuis l''onglet Profils.' } else { 'Installe toute la cha' + [char]0xEE + 'ne audio ArtIsWar en silence : VB-CABLE, Voicemeeter, Equalizer APO, moteur ATK, biblioth' + [char]0xE8 + 'que et r' + [char]0xE9 + 'glages.' }
+}
+function Show-InstallProgress {
+    $ui.InstDone.Visibility = 'Collapsed'; $ui.StepCard.Visibility = 'Visible'; $ui.ProgCard.Visibility = 'Visible'; $ui.InstLog.Visibility = 'Visible'
+}
+Update-InstallView
+$ui.BtnInstall.Add_Click({ Show-InstallProgress; Start-Job2 'install' })
 $ui.BtnUninstall.Add_Click({
     $r = [Windows.MessageBox]::Show("Tout desinstaller (Equalizer APO, ReaPlugs, plugins, VB-CABLE, Voicemeeter, bibliotheque) ?`nTes reglages Tune Manager sont conserves.", "Tune Manager", 'YesNo', 'Warning')
-    if ($r -eq 'Yes') { Start-Job2 'uninstall' }
+    if ($r -eq 'Yes') { Show-InstallProgress; Start-Job2 'uninstall' }
 })
 $ui.BtnOfficial.Add_Click({ Start-Process powershell -Verb RunAs -ArgumentList "-NoExit -NoProfile -ExecutionPolicy Bypass -Command `"$OfficialCmd`"" })
 # ---------------------------------------------------------------- 2. Windows
@@ -2697,7 +2948,24 @@ $win.Add_ContentRendered({
     else { Show-AppUpdate }
 })
 $ui.Nav3.IsChecked = $true
-if ($env:TM_DEMO) { $win.Add_ContentRendered({ $script:jobKind = 'install'; Show-Page 0; $ui.WarnBanner.Visibility = 'Visible'; $ui.InstTitle.Text = 'Installation en cours'; $timer.Start() }) }
+# Mode demo ($env:TM_DEMO=1) : simule une installation complete pour voir les animations, sans rien installer
+if ($env:TM_DEMO) {
+    $win.Add_ContentRendered({
+        $script:jobKind = 'install'; Show-Page 0; Show-InstallProgress; Set-Dots 0 $false
+        $ui.WarnBanner.Visibility = 'Visible'; $ui.InstTitle.Text = 'Installation en cours (d' + [char]0xE9 + 'mo)'; $ui.InstSub.Text = 'Simulation : rien n''est install' + [char]0xE9 + ' ni modifi' + [char]0xE9 + '.'
+        $script:demoPct = 0.0
+        $script:demoTimer = New-Object Windows.Threading.DispatcherTimer; $script:demoTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+        $script:demoTimer.Add_Tick({ try {
+            $script:demoPct = [Math]::Min(100.0, $script:demoPct + 0.45)
+            $stp = [Math]::Min(10, [int][Math]::Floor($script:demoPct / 10) + 1); $done = $script:demoPct -ge 100
+            $p = @{ Pct = [int]$script:demoPct; Msg = $(if ($done) { 'Termine (demo)' } else { "$($StepNames[$stp - 1]) (demo)" }); Step = $stp; Done = $false; Error = $null; Log = @("Demo : aucune modification n'est faite sur le PC.") }
+            $ui.CurTask.Text = $p.Msg; Set-Bar $p.Pct; Set-Dots $stp $done ((($script:demoPct - 10 * ($stp - 1)) * 10))
+            if ($ui.InstLog.Text -ne $p.Log[0]) { $ui.InstLog.Text = $p.Log[0] }
+            if ($done) { $script:demoTimer.Stop(); $ui.WarnBanner.Visibility = 'Collapsed'; $ui.InstTitle.Text = 'Installation termin' + [char]0xE9 + 'e (d' + [char]0xE9 + 'mo)' }
+        } catch { $script:demoTimer.Stop(); "$($_.InvocationInfo.ScriptLineNumber): $_" | Out-File (Join-Path $env:PUBLIC 'tm-demo-error.txt') } })
+        $script:demoTimer.Start()
+    })
+}
 if ($env:TM_SNAP) {
     $snapT = New-Object Windows.Threading.DispatcherTimer; $snapT.Interval = [TimeSpan]::FromSeconds(7)
     $snapT.Add_Tick({ $snapT.Stop(); $rtb = New-Object Windows.Media.Imaging.RenderTargetBitmap ([int]$win.ActualWidth), ([int]$win.ActualHeight), 96, 96, ([Windows.Media.PixelFormats]::Pbgra32)

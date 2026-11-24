@@ -35,11 +35,9 @@ public static class SetupApp {
     public static void Main(string[] args) {
         // /update : mise a jour silencieuse lancee par Tune Manager (memes options, puis relance)
         if (args.Length >= 1 && args[0].ToLowerInvariant() == "/update") {
-            string pubDesk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory), "Tune Manager.lnk");
-            bool hasTask = false;
-            try { var p = Process.Start(new ProcessStartInfo("schtasks.exe", "/Query /TN \"" + StartTask + "\"") { UseShellExecute = false, CreateNoWindow = true }); p.WaitForExit(15000); hasTask = p.ExitCode == 0; } catch { }
+            bool cd, cs; CurrentOptions(out cd, out cs);
             try {
-                Install(File.Exists(pubDesk), hasTask, delegate (string t, double v) { });
+                Install(cd, cs, delegate (string t, double v) { });
                 Process.Start(new ProcessStartInfo(Path.Combine(AppDir, "TuneManager.exe")) { UseShellExecute = true, WorkingDirectory = AppDir });
             } catch (Exception ex) {
                 MessageBox.Show("Mise à jour impossible :\n" + ex.Message, "Tune Manager", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -54,20 +52,36 @@ public static class SetupApp {
         } catch { }
         El<TextBlock>("Path").Text = AppDir;
         bool already = File.Exists(Path.Combine(AppDir, "TuneManager.ps1"));
-        if (already) { El<TextBlock>("WTitle").Text = "Mettre à jour Tune Manager"; El<Button>("BInstall").Content = "Mettre à jour"; }
         El<Grid>("Title").MouseLeftButtonDown += delegate { win.DragMove(); };
         El<Button>("BClose").Click += delegate { win.Close(); };
         El<Button>("BCancel").Click += delegate { win.Close(); };
+        El<Button>("BCancel0").Click += delegate { win.Close(); };
+        // Deja installe : un seul ecran, Desinstaller ou Reparer (memes options qu'avant)
+        El<Button>("BRepair").Click += delegate {
+            bool cd, cs; CurrentOptions(out cd, out cs);
+            El<TextBlock>("S3Title").Text = "Réparation...";
+            El<TextBlock>("S4Title").Text = "Tune Manager est réparé";
+            Show(3); RunInstall(cd, cs);
+        };
+        El<Button>("BUninstall").Click += delegate {
+            try {
+                Process.Start(new ProcessStartInfo(Path.Combine(AppDir, "TuneManager.exe"), "/uninstall") { UseShellExecute = true, WorkingDirectory = AppDir });
+                win.Close();
+            } catch (Exception ex) {
+                MessageBox.Show(win, "Désinstallation impossible :\n" + ex.Message, "Tune Manager Setup", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        };
         El<Button>("BNext").Click += delegate { Show(2); };
         El<Button>("BBack").Click += delegate { Show(1); };
-        El<Button>("BInstall").Click += delegate { Show(3); RunInstall(); };
+        El<Button>("BInstall").Click += delegate { Show(3); RunInstall(El<CheckBox>("CDesk").IsChecked == true, El<CheckBox>("CStart").IsChecked == true); };
         El<Button>("BFinish").Click += delegate {
             if (El<CheckBox>("CLaunch").IsChecked == true) {
                 try { Process.Start(new ProcessStartInfo(Path.Combine(AppDir, "TuneManager.exe")) { UseShellExecute = true, WorkingDirectory = AppDir }); } catch { }
             }
             win.Close();
         };
-        Show(1);
+        bool installed = already && File.Exists(Path.Combine(AppDir, "TuneManager.exe"));
+        Show(installed ? 0 : 1);
         // /snap <png> <etape> : capture de l'ecran pour verifier le rendu (developpement)
         if (args.Length >= 3 && args[0] == "/snap") {
             int st = int.Parse(args[2]); string png = args[1];
@@ -91,6 +105,9 @@ public static class SetupApp {
 
     static void Show(int s) {
         step = s;
+        El<Grid>("S0").Visibility = s == 0 ? Visibility.Visible : Visibility.Collapsed;
+        El<StackPanel>("F0").Visibility = s == 0 ? Visibility.Visible : Visibility.Collapsed;
+        El<StackPanel>("Steps").Visibility = s == 0 ? Visibility.Hidden : Visibility.Visible;
         El<Grid>("S1").Visibility = s == 1 ? Visibility.Visible : Visibility.Collapsed;
         El<Grid>("S2").Visibility = s == 2 ? Visibility.Visible : Visibility.Collapsed;
         El<Grid>("S3").Visibility = s == 3 ? Visibility.Visible : Visibility.Collapsed;
@@ -109,9 +126,15 @@ public static class SetupApp {
         win.Dispatcher.Invoke(new Action(delegate { El<TextBlock>("PStatus").Text = t; El<ProgressBar>("PBar").Value = p; }));
     }
 
-    static void RunInstall() {
-        bool desk = El<CheckBox>("CDesk").IsChecked == true;
-        bool start = El<CheckBox>("CStart").IsChecked == true;
+    // Options de l'installation existante : raccourci bureau present, tache de demarrage presente
+    static void CurrentOptions(out bool desk, out bool start) {
+        desk = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory), "Tune Manager.lnk"));
+        start = false;
+        try { var p = Process.Start(new ProcessStartInfo("schtasks.exe", "/Query /TN \"" + StartTask + "\"") { UseShellExecute = false, CreateNoWindow = true }); p.WaitForExit(15000); start = p.ExitCode == 0; } catch { }
+    }
+
+    static void RunInstall(bool desk, bool start) {
+        bool repair = El<TextBlock>("S3Title").Text.StartsWith("Répar");
         var t = new Thread(delegate () {
             try {
                 Install(desk, start, Status);
@@ -119,8 +142,8 @@ public static class SetupApp {
                 win.Dispatcher.Invoke(new Action(delegate { Show(4); }));
             } catch (Exception ex) {
                 win.Dispatcher.Invoke(new Action(delegate {
-                    MessageBox.Show(win, "Installation impossible :\n" + ex.Message, "Tune Manager Setup", MessageBoxButton.OK, MessageBoxImage.Error);
-                    Show(2);
+                    MessageBox.Show(win, (repair ? "Réparation impossible :\n" : "Installation impossible :\n") + ex.Message, "Tune Manager Setup", MessageBoxButton.OK, MessageBoxImage.Error);
+                    Show(repair ? 0 : 2);
                 }));
             }
         });
@@ -265,13 +288,23 @@ public static class SetupApp {
         <TextBlock Text='Tune' FontSize='38' FontWeight='Bold' Margin='0,0,0,-12'/>
         <TextBlock Text='Manager' FontSize='38' FontWeight='Bold' Foreground='#FF6A45'/>
         <TextBlock Text='Chaîne audio ArtTuneDB' Style='{StaticResource Sub}' Margin='0,6,0,34'/>
+        <StackPanel x:Name='Steps'>
         <StackPanel Orientation='Horizontal' Margin='0,0,0,16'><Ellipse x:Name='D1' Width='10' Height='10' Margin='0,0,12,0'/><TextBlock Text='Bienvenue' FontSize='14' Foreground='#D9CCC9'/></StackPanel>
         <StackPanel Orientation='Horizontal' Margin='0,0,0,16'><Ellipse x:Name='D2' Width='10' Height='10' Margin='0,0,12,0'/><TextBlock Text='Options' FontSize='14' Foreground='#D9CCC9'/></StackPanel>
         <StackPanel Orientation='Horizontal' Margin='0,0,0,16'><Ellipse x:Name='D3' Width='10' Height='10' Margin='0,0,12,0'/><TextBlock Text='Installation' FontSize='14' Foreground='#D9CCC9'/></StackPanel>
         <StackPanel Orientation='Horizontal'><Ellipse x:Name='D4' Width='10' Height='10' Margin='0,0,12,0'/><TextBlock Text='Terminé' FontSize='14' Foreground='#D9CCC9'/></StackPanel>
+        </StackPanel>
       </StackPanel>
       <Border Grid.Row='1' Grid.Column='1' Margin='0,10,30,0' CornerRadius='20' Background='#CC150C0B' BorderBrush='#2E1C19' BorderThickness='1' Padding='32,28'>
         <Grid>
+          <Grid x:Name='S0' Visibility='Collapsed'>
+            <StackPanel>
+              <TextBlock Text='Tune Manager est déjà installé' FontSize='28' FontWeight='Bold' Margin='0,0,0,10' TextWrapping='Wrap'/>
+              <TextBlock Style='{StaticResource Sub}' Margin='0,0,0,22' Text='Les mises à jour se font automatiquement depuis Tune Manager. Ici, tu peux le désinstaller ou le réparer.'/>
+              <TextBlock Style='{StaticResource Item}' Text='●  Désinstaller : retire Tune Manager et, si tu le choisis, toute la chaîne audio (pilotes, périphériques, restes).'/>
+              <TextBlock Style='{StaticResource Item}' Text='●  Réparer : réinstalle les fichiers de Tune Manager en gardant tes options et tes réglages.'/>
+            </StackPanel>
+          </Grid>
           <Grid x:Name='S1'>
             <StackPanel>
               <TextBlock x:Name='WTitle' Text='Installer Tune Manager' FontSize='28' FontWeight='Bold' Margin='0,0,0,10'/>
@@ -296,7 +329,7 @@ public static class SetupApp {
           </Grid>
           <Grid x:Name='S3' Visibility='Collapsed'>
             <StackPanel VerticalAlignment='Center'>
-              <TextBlock Text='Installation...' FontSize='28' FontWeight='Bold' Margin='0,0,0,22'/>
+              <TextBlock x:Name='S3Title' Text='Installation...' FontSize='28' FontWeight='Bold' Margin='0,0,0,22'/>
               <ProgressBar x:Name='PBar' Height='8' Minimum='0' Maximum='100' Foreground='#FF5236' Background='#2A1915' BorderThickness='0'/>
               <TextBlock x:Name='PStatus' Style='{StaticResource Sub}' Margin='0,14,0,0'/>
             </StackPanel>
@@ -307,7 +340,7 @@ public static class SetupApp {
                 <Border.Effect><DropShadowEffect Color='#FF4A2E' BlurRadius='30' ShadowDepth='0' Opacity='0.6'/></Border.Effect>
                 <Path Data='M 18,33 L 28,43 L 47,22' Stroke='White' StrokeThickness='5' StrokeStartLineCap='Round' StrokeEndLineCap='Round' StrokeLineJoin='Round'/>
               </Border>
-              <TextBlock Text='Tune Manager est installé' FontSize='28' FontWeight='Bold' Margin='0,0,0,10'/>
+              <TextBlock x:Name='S4Title' Text='Tune Manager est installé' FontSize='28' FontWeight='Bold' Margin='0,0,0,10'/>
               <TextBlock Style='{StaticResource Sub}' Margin='0,0,0,24' Text='Au premier lancement, Tune Manager propose d&apos;installer la chaîne audio. Il se désinstalle depuis Paramètres Windows › Applications.'/>
               <CheckBox x:Name='CLaunch' Content='Lancer Tune Manager' IsChecked='True'/>
             </StackPanel>
@@ -315,6 +348,11 @@ public static class SetupApp {
         </Grid>
       </Border>
       <Grid Grid.Row='2' Grid.Column='1' Margin='0,18,30,26'>
+        <StackPanel x:Name='F0' Orientation='Horizontal' HorizontalAlignment='Right' Visibility='Collapsed'>
+          <Button x:Name='BCancel0' Style='{StaticResource Ghost}' Content='Annuler' Margin='0,0,10,0'/>
+          <Button x:Name='BRepair' Style='{StaticResource Ghost}' Content='Réparer' Margin='0,0,10,0'/>
+          <Button x:Name='BUninstall' Style='{StaticResource Primary}' Content='Désinstaller'/>
+        </StackPanel>
         <StackPanel x:Name='F1' Orientation='Horizontal' HorizontalAlignment='Right'>
           <Button x:Name='BCancel' Style='{StaticResource Ghost}' Content='Annuler' Margin='0,0,10,0'/>
           <Button x:Name='BNext' Style='{StaticResource Primary}' Content='Suivant'/>
