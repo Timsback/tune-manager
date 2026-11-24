@@ -1344,9 +1344,88 @@ function Register-StartupTask([bool]$enable, [string]$script = $PSCommandPath) {
     Register-ScheduledTask -TaskName $StartTask -Action $a -Trigger $t -Principal $p -Settings $se -Description 'Lance Tune Manager dans la zone de notification' | Out-Null
 }
 function Test-StartupTask { [bool](Get-ScheduledTask -TaskName $StartTask -ErrorAction SilentlyContinue) }
-function Show-Msg([string]$t, [string]$btn = 'OK', [string]$icon = 'Information') {
-    Add-Type -AssemblyName PresentationFramework
-    [Windows.MessageBox]::Show($t, 'Tune Manager', $btn, $icon)
+# Boite de dialogue aux couleurs de Tune Manager (remplace la MessageBox grise de Windows).
+# Renvoie 'Yes' / 'No' / 'Cancel' / 'OK' comme MessageBox. $labels : textes des boutons, ex. @{ Yes = 'Supprimer' }
+# Titre : premiere ligne du message (si courte), le reste est le texte.
+function Show-Msg([string]$t, [string]$btn = 'OK', [string]$icon = 'Information', [hashtable]$labels = @{}) {
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+    $dx = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Tune Manager" Width="520" SizeToContent="Height" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" WindowStartupLocation="CenterScreen" ShowInTaskbar="False" Topmost="True"
+        FontFamily="Segoe UI Variable Display, Segoe UI" Foreground="#F5EFEE">
+  <Window.Resources>
+    <LinearGradientBrush x:Key="Acc" StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#FF6A45" Offset="0"/><GradientStop Color="#E23A22" Offset="1"/></LinearGradientBrush>
+    <Style x:Key="P" TargetType="Button">
+      <Setter Property="Foreground" Value="White"/><Setter Property="FontSize" Value="14"/><Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Height" Value="42"/><Setter Property="Padding" Value="22,0"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Margin" Value="10,0,0,0"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+        <Grid x:Name="g">
+          <Border CornerRadius="14" Background="#FF4A2E"><Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="22" ShadowDepth="0" Opacity="0.5"/></Border.Effect></Border>
+          <Border CornerRadius="14" Background="{StaticResource Acc}" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+        </Grid>
+        <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="g" Property="Opacity" Value="0.9"/></Trigger></ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style x:Key="G" TargetType="Button">
+      <Setter Property="Foreground" Value="#F5EFEE"/><Setter Property="FontSize" Value="14"/><Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Height" Value="42"/><Setter Property="Padding" Value="20,0"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Margin" Value="10,0,0,0"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+        <Border x:Name="b" CornerRadius="14" Background="#1C1110" BorderBrush="#3A2420" BorderThickness="1" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+        <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="#FF5236"/></Trigger></ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+  </Window.Resources>
+  <Grid Margin="24">
+    <Border CornerRadius="22" Background="#140B0A"><Border.Effect><DropShadowEffect Color="#FF4A2E" BlurRadius="40" ShadowDepth="0" Opacity="0.28"/></Border.Effect></Border>
+    <Border x:Name="Frame" CornerRadius="22" BorderBrush="#5A2A20" BorderThickness="1" Padding="28,24,28,22">
+      <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#2A1411" Offset="0"/><GradientStop Color="#140B0A" Offset="1"/></LinearGradientBrush></Border.Background>
+      <StackPanel>
+        <Grid Margin="0,0,0,16">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
+          <Border x:Name="Ico" Width="46" Height="46" CornerRadius="15" Margin="0,0,18,0" VerticalAlignment="Top">
+            <TextBlock x:Name="IcoT" FontSize="22" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <StackPanel Grid.Column="1" VerticalAlignment="Center">
+            <TextBlock Text="TUNE MANAGER" FontSize="11" FontWeight="Bold" Foreground="#FF5236" Margin="0,0,0,4"/>
+            <TextBlock x:Name="Ttl" FontSize="19" FontWeight="Bold" TextWrapping="Wrap"/>
+          </StackPanel>
+        </Grid>
+        <TextBlock x:Name="Msg" FontSize="14" Foreground="#C9BAB6" TextWrapping="Wrap" LineHeight="21" Margin="0,0,0,24"/>
+        <StackPanel x:Name="Btns" Orientation="Horizontal" HorizontalAlignment="Right"/>
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>
+'@
+    $w = [Windows.Markup.XamlReader]::Parse($dx)
+    $bc = New-Object Windows.Media.BrushConverter
+    $parts = $t -split "`n", 2
+    if ($parts.Count -gt 1 -and $parts[0].Length -le 70) { $ttl = $parts[0]; $body = $parts[1].Trim() } else { $ttl = 'Tune Manager'; $body = $t }
+    $w.FindName('Ttl').Text = $ttl; $w.FindName('Msg').Text = $body
+    if (-not $body) { $w.FindName('Msg').Visibility = 'Collapsed' }
+    $ico = $w.FindName('Ico'); $it = $w.FindName('IcoT')
+    if ($icon -match 'Warning|Error|Exclamation|Stop|Hand') {
+        $ico.Background = $bc.ConvertFromString('#2E1210'); $ico.BorderBrush = $bc.ConvertFromString('#FF5236'); $ico.BorderThickness = 1.5; $it.Text = '!'; $it.Foreground = $bc.ConvertFromString('#FF5236')
+    } else {
+        $ico.Background = $w.FindResource('Acc'); $it.Foreground = [Windows.Media.Brushes]::White; $it.Text = $(if ($icon -eq 'Question') { '?' } else { 'i' })
+    }
+    $res = @{ V = $(switch ($btn) { 'YesNo' { 'No' } 'YesNoCancel' { 'Cancel' } 'OKCancel' { 'Cancel' } default { 'OK' } }) }
+    $def = @{ Yes = 'Oui'; No = 'Non'; Cancel = 'Annuler'; OK = 'OK' }
+    $order = switch ($btn) { 'YesNo' { @('No', 'Yes') } 'YesNoCancel' { @('Cancel', 'No', 'Yes') } 'OKCancel' { @('Cancel', 'OK') } default { @('OK') } }
+    foreach ($k in $order) {
+        $b = New-Object Windows.Controls.Button
+        $b.Content = if ($labels.ContainsKey($k)) { $labels[$k] } else { $def[$k] }
+        $b.Style = $w.FindResource($(if ($k -eq 'Yes' -or $k -eq 'OK') { 'P' } else { 'G' }))
+        $b.Tag = $k
+        $b.Add_Click({ param($s) $res.V = [string]$s.Tag; [Windows.Window]::GetWindow($s).Close() }.GetNewClosure())
+        if ($k -eq 'Cancel' -or ($k -eq 'No' -and $btn -eq 'YesNo') -or $btn -eq 'OK') { $b.IsCancel = $true }
+        $w.FindName('Btns').Children.Add($b) | Out-Null
+    }
+    $w.FindName('Frame').Add_MouseLeftButtonDown({ param($s) try { [Windows.Window]::GetWindow($s).DragMove() } catch {} })
+    try { if ($win -and $win.IsVisible) { $w.Owner = $win; $w.WindowStartupLocation = 'CenterOwner'; $w.Topmost = $false } } catch {}
+    [void]$w.ShowDialog()
+    $res.V
 }
 if ($InstallApp) {
     try {
@@ -1380,11 +1459,11 @@ if ($InstallApp) {
     exit
 }
 if ($RemoveApp) {
-    $r = Show-Msg "Désinstaller Tune Manager ?`n`nOui : désinstaller aussi toute la chaîne audio (Equalizer APO, Voicemeeter, VB-CABLE, ReaPlugs, bibliothèque).`nNon : retirer seulement le logiciel Tune Manager et garder le son tel quel." 'YesNoCancel' 'Question'
+    $r = Show-Msg "Désinstaller Tune Manager ?`nTout désinstaller : retire aussi toute la chaîne audio (Equalizer APO, Voicemeeter, VB-CABLE, ReaPlugs, bibliothèque).`nLogiciel seul : retire seulement Tune Manager et garde le son tel quel." 'YesNoCancel' 'Question' @{ Yes = 'Tout désinstaller'; No = 'Logiciel seul' }
     if ($r -eq 'Cancel') { exit }
     $wipe = $false
     if ($r -eq 'Yes') {
-        $wipe = (Show-Msg "Supprimer aussi tes EQ personnels et tes préférences (C:\Users\Public\TuneManager) ?`n`nOui : nettoyage complet, rien ne reste.`nNon : ils seront retrouvés à la prochaine installation." 'YesNo' 'Question') -eq 'Yes'
+        $wipe = (Show-Msg "Supprimer aussi tes EQ et préférences ?`nIls sont dans C:\Users\Public\TuneManager. Si tu les gardes, tu les retrouveras à la prochaine installation." 'YesNo' 'Question' @{ Yes = 'Tout effacer'; No = 'Les garder' }) -eq 'Yes'
     }
     try {
         Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | ForEach-Object {
@@ -2462,7 +2541,7 @@ $timer.Add_Tick({
         elseif ($script:jobKind -eq 'install') {
             $ui.InstTitle.Text = 'Installation termin&#233;e' -replace '&#233;', [char]0xE9
             try { Load-Presets; Update-Side; Show-Diag } catch { $script:loading = $false }
-            [Windows.MessageBox]::Show("Installation terminee.`n`nDerniere etape manuelle : le Device Selector va s'ouvrir.`nCoche 'Art Tune +', coche 'Troubleshooting options', choisis 'LFX/GFX', puis OK.", "Tune Manager") | Out-Null
+            Show-Msg "Installation terminée`nDernière étape manuelle : le Device Selector va s'ouvrir. Coche « Art Tune + », coche « Troubleshooting options », choisis « LFX/GFX », puis OK." | Out-Null
             $env:QT_PLUGIN_PATH = "C:\Program Files\EqualizerAPO\qt"; Start-Process "C:\Program Files\EqualizerAPO\DeviceSelector.exe" -WorkingDirectory "C:\Program Files\EqualizerAPO"
             Show-Page 1
         } else { $ui.InstTitle.Text = 'D' + [char]0xE9 + 'sinstallation termin' + [char]0xE9 + 'e'; Update-Side; $ui.Nav0.Content = 'Installation'; $ui.BtnInstall.Content = 'Installer' }
@@ -2497,7 +2576,7 @@ function Show-InstallProgress {
 Update-InstallView
 $ui.BtnInstall.Add_Click({ Show-InstallProgress; Start-Job2 'install' })
 $ui.BtnUninstall.Add_Click({
-    $r = [Windows.MessageBox]::Show("Tout desinstaller (Equalizer APO, ReaPlugs, plugins, VB-CABLE, Voicemeeter, bibliotheque) ?`nTes reglages Tune Manager sont conserves.", "Tune Manager", 'YesNo', 'Warning')
+    $r = Show-Msg "Tout désinstaller ?`nEqualizer APO, ReaPlugs, plugins, VB-CABLE, Voicemeeter et la bibliothèque seront retirés. Tes profils et réglages Tune Manager sont conservés." 'YesNo' 'Warning' @{ Yes = 'Tout désinstaller'; No = 'Annuler' }
     if ($r -eq 'Yes') { Show-InstallProgress; Start-Job2 'uninstall' }
 })
 $ui.BtnOfficial.Add_Click({ Start-Process powershell -Verb RunAs -ArgumentList "-NoExit -NoProfile -ExecutionPolicy Bypass -Command `"$OfficialCmd`"" })
@@ -2516,8 +2595,8 @@ $ui.BtnDisable.Add_Click({
 })
 $ui.BtnDevSel.Add_Click({
     $ds = "C:\Program Files\EqualizerAPO\DeviceSelector.exe"
-    if (Test-Path $ds) { $env:QT_PLUGIN_PATH = "C:\Program Files\EqualizerAPO\qt"; Start-Process $ds -WorkingDirectory "C:\Program Files\EqualizerAPO"; [Windows.MessageBox]::Show("Coche 'Art Tune +', coche 'Troubleshooting options', choisis 'LFX/GFX', puis OK.`nRedemarre le PC si demande.", "Device Selector") | Out-Null }
-    else { [Windows.MessageBox]::Show("Equalizer APO n'est pas installe (etape 1).", "Tune Manager") | Out-Null }
+    if (Test-Path $ds) { $env:QT_PLUGIN_PATH = "C:\Program Files\EqualizerAPO\qt"; Start-Process $ds -WorkingDirectory "C:\Program Files\EqualizerAPO"; Show-Msg "Device Selector`nCoche « Art Tune + », coche « Troubleshooting options », choisis « LFX/GFX », puis OK. Redémarre le PC si c'est demandé." | Out-Null }
+    else { Show-Msg "Equalizer APO n'est pas installé`nInstalle d'abord la chaîne audio depuis Configuration." 'OK' 'Warning' | Out-Null }
 })
 $ui.BtnSound.Add_Click({ Start-Process "mmsys.cpl" })
 
@@ -2775,7 +2854,7 @@ $ui.GsClose.Add_Click({ $ui.GameOverlay.Visibility = 'Collapsed' })
 $ui.BtnEditProfile.Add_Click({ $st = Get-State; $p = $script:Profiles | Where-Object { $_.Name -eq $st.Active } | Select-Object -First 1; if ($p) { Open-Wizard $p } })
 $ui.BtnDelProfile.Add_Click({
     $st = Get-State; $p = $script:Profiles | Where-Object { $_.Name -eq $st.Active } | Select-Object -First 1; if (-not $p) { return }
-    if ([Windows.MessageBox]::Show("Supprimer le profil « $($p.Name) » ?`nLe son actuel reste appliqué.", 'Tune Manager', 'YesNo') -ne 'Yes') { return }
+    if ((Show-Msg "Supprimer le profil « $($p.Name) » ?`nLe son actuel reste appliqué." 'YesNo' 'Warning' @{ Yes = 'Supprimer'; No = 'Annuler' }) -ne 'Yes') { return }
     $script:Profiles = @($script:Profiles | Where-Object { $_.Name -ne $p.Name }); Save-Profiles
     $st.Remove('Active'); Save-State $st; Render-Profiles; Set-Status "Profil supprimé."
 })
