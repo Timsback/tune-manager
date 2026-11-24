@@ -637,7 +637,8 @@ function Init-VM {
     $rc = [VM]::VBVMR_Login()
     if (-not (Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue)) {
         $exe = Join-Path $VmDir 'voicemeeter_x64.exe'; if (-not (Test-Path $exe)) { $exe = Join-Path $VmDir 'voicemeeter.exe' }
-        Start-Process $exe -WorkingDirectory $VmDir -WindowStyle Hidden
+        # -r : lancement "comme au demarrage de Windows", seul cas ou Voicemeeter respecte "fenetre cachee" (SysTrayShowOnRun=0)
+        Start-Process $exe '-r' -WorkingDirectory $VmDir -WindowStyle Hidden
         for ($w = 0; $w -lt 30 -and -not (Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue); $w++) { Start-Sleep -Milliseconds 500 }
         Start-Sleep 2; [void][VM]::VBVMR_Logout(); [void][VM]::VBVMR_Login()
     }
@@ -1178,8 +1179,14 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
         # Options ecrites AVANT tout lancement : zone de notification, fenetre cachee au demarrage.
         # Sinon Voicemeeter s'affiche jusqu'a son reglage en fin d'installation.
         Set-VMOptions $null
+        # L'installateur lance Voicemeeter a la fin (fenetre visible un instant) : une surveillance le ferme des
+        # qu'il apparait, pendant toute l'installation. Il est relance cache a l'etape 10.
+        $vmWatch = Start-Job { $end = (Get-Date).AddMinutes(4); while ((Get-Date) -lt $end) { Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 80 } }
+        Start-Sleep -Milliseconds 1500   # le temps que la surveillance demarre
         $rc = Wait-ProcAuto (Start-Process $exe.FullName '-i -h' -PassThru) 180 $log
         & $log "  Voicemeeter : code $rc"
+        Start-Sleep 2; Stop-Job $vmWatch -ErrorAction SilentlyContinue; Remove-Job $vmWatch -Force -ErrorAction SilentlyContinue
+        Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     } else { & $log "  Deja installe" }
     Set-VMOptions $null
 
