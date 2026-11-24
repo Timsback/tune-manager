@@ -8,7 +8,7 @@
 #   TuneManager.ps1 -AutoCheck -> verifie les mises a jour et notifie (tache planifiee)
 # ============================================================================
 param([switch]$Check, [switch]$AutoCheck, [switch]$VmTest, [switch]$RunInstall, [switch]$RunUninstall, [switch]$RunRepair,
-      [switch]$Tray, [switch]$InstallApp, [switch]$RemoveApp)
+      [switch]$Tray, [switch]$InstallApp, [switch]$RemoveApp, [switch]$AfterChain)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -1459,10 +1459,11 @@ if ($InstallApp) {
     exit
 }
 if ($RemoveApp) {
-    $r = Show-Msg "Désinstaller Tune Manager ?`nTout désinstaller : retire aussi toute la chaîne audio (Equalizer APO, Voicemeeter, VB-CABLE, ReaPlugs, bibliothèque).`nLogiciel seul : retire seulement Tune Manager et garde le son tel quel." 'YesNoCancel' 'Question' @{ Yes = 'Tout désinstaller'; No = 'Logiciel seul' }
+    # -AfterChain : lance par l'application apres "Tout desinstaller, logiciel compris" (chaine deja retiree)
+    $r = if ($AfterChain) { 'No' } else { Show-Msg "Désinstaller Tune Manager ?`nTout désinstaller : retire aussi toute la chaîne audio (Equalizer APO, Voicemeeter, VB-CABLE, ReaPlugs, bibliothèque).`nLogiciel seul : retire seulement Tune Manager et garde le son tel quel." 'YesNoCancel' 'Question' @{ Yes = 'Tout désinstaller'; No = 'Logiciel seul' } }
     if ($r -eq 'Cancel') { exit }
     $wipe = $false
-    if ($r -eq 'Yes') {
+    if ($r -eq 'Yes' -or $AfterChain) {
         $wipe = (Show-Msg "Supprimer aussi tes EQ et préférences ?`nIls sont dans C:\Users\Public\TuneManager. Si tu les gardes, tu les retrouveras à la prochaine installation." 'YesNo' 'Question' @{ Yes = 'Tout effacer'; No = 'Les garder' }) -eq 'Yes'
     }
     try {
@@ -1484,7 +1485,7 @@ if ($RemoveApp) {
         if ($wipe) { Remove-Item (Join-Path $env:PUBLIC 'TuneManager') -Recurse -Force -ErrorAction SilentlyContinue }
         # Le dossier contient ce script en cours d'execution : suppression differee
         Start-Process cmd.exe "/c timeout /t 3 /nobreak >nul & rmdir /s /q `"$AppDir`"" -WindowStyle Hidden
-        Show-Msg $(if ($r -eq 'Yes') { "Tune Manager et la chaîne audio ont été désinstallés$(if (-not $wipe) { ' (tes EQ et préférences restent dans C:\Users\Public\TuneManager)' }). Redémarre le PC pour terminer." } else { "Tune Manager a été désinstallé. Ta configuration audio est conservée (tes profils et EQ restent dans C:\Users\Public\TuneManager)." }) | Out-Null
+        Show-Msg $(if ($r -eq 'Yes' -or $AfterChain) { "Tune Manager et la chaîne audio ont été désinstallés$(if (-not $wipe) { ' (tes EQ et préférences restent dans C:\Users\Public\TuneManager)' }). Redémarre le PC pour terminer." } else { "Tune Manager a été désinstallé. Ta configuration audio est conservée (tes profils et EQ restent dans C:\Users\Public\TuneManager)." }) | Out-Null
     } catch { Show-Msg "Désinstallation incomplète : $($_.Exception.Message)" 'OK' 'Error' | Out-Null }
     exit
 }
@@ -2231,6 +2232,8 @@ $win.Add_MouseMove({
     if ($ui.Aura.Tag -ne 'on') { $ui.Aura.Tag = 'on'; Fade-Aura 1 }
 })
 $win.Add_MouseLeave({ $ui.Aura.Tag = $null; Fade-Aura 0 })
+# ClipToBounds coupe en rectangle : sans ce masque arrondi, l'aura deborde dans les coins transparents de la fenetre
+$ui.AuraLayer.Add_SizeChanged({ param($s) $s.Clip = New-Object Windows.Media.RectangleGeometry((New-Object Windows.Rect(0, 0, $s.ActualWidth, $s.ActualHeight)), 23, 23) })
 
 # Logo de l'application dans la barre de titre (plus grande image de l'icone)
 foreach ($f in "$PSScriptRoot\TuneManager.ico", "$DB\ArtTuneDB.ico") {
@@ -2544,6 +2547,11 @@ $timer.Add_Tick({
             Show-Msg "Installation terminée`nDernière étape manuelle : le Device Selector va s'ouvrir. Coche « Art Tune + », coche « Troubleshooting options », choisis « LFX/GFX », puis OK." | Out-Null
             $env:QT_PLUGIN_PATH = "C:\Program Files\EqualizerAPO\qt"; Start-Process "C:\Program Files\EqualizerAPO\DeviceSelector.exe" -WorkingDirectory "C:\Program Files\EqualizerAPO"
             Show-Page 1
+        } elseif ($script:removeAppAfter -and -not $p.Error) {
+            # Chaine retiree : on retire maintenant le logiciel lui-meme (raccourcis, dossier, entree Applications)
+            $ui.InstTitle.Text = 'D' + [char]0xE9 + 'sinstallation de Tune Manager...'
+            Start-Process powershell "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`" -RemoveApp -AfterChain" -WindowStyle Hidden
+            $script:quitting = $true; $win.Close()
         } else { $ui.InstTitle.Text = 'D' + [char]0xE9 + 'sinstallation termin' + [char]0xE9 + 'e'; Update-Side; $ui.Nav0.Content = 'Installation'; $ui.BtnInstall.Content = 'Installer' }
     }
 })
@@ -2576,8 +2584,10 @@ function Show-InstallProgress {
 Update-InstallView
 $ui.BtnInstall.Add_Click({ Show-InstallProgress; Start-Job2 'install' })
 $ui.BtnUninstall.Add_Click({
-    $r = Show-Msg "Tout désinstaller ?`nEqualizer APO, ReaPlugs, plugins, VB-CABLE, Voicemeeter et la bibliothèque seront retirés. Tes profils et réglages Tune Manager sont conservés." 'YesNo' 'Warning' @{ Yes = 'Tout désinstaller'; No = 'Annuler' }
-    if ($r -eq 'Yes') { Show-InstallProgress; Start-Job2 'uninstall' }
+    $r = Show-Msg "Que veux-tu désinstaller ?`nChaîne audio seule : retire Equalizer APO, ReaPlugs, plugins, VB-CABLE, Voicemeeter et la bibliothèque. Tune Manager reste installé.`nTout, logiciel compris : retire aussi Tune Manager (raccourcis, dossier, entrée dans Applications)." 'YesNoCancel' 'Warning' @{ Yes = 'Tout, logiciel compris'; No = 'Chaîne audio seule' }
+    if ($r -eq 'Cancel') { return }
+    $script:removeAppAfter = ($r -eq 'Yes')
+    Show-InstallProgress; Start-Job2 'uninstall'
 })
 $ui.BtnOfficial.Add_Click({ Start-Process powershell -Verb RunAs -ArgumentList "-NoExit -NoProfile -ExecutionPolicy Bypass -Command `"$OfficialCmd`"" })
 # ---------------------------------------------------------------- 2. Windows
