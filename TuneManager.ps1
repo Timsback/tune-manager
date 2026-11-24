@@ -1213,7 +1213,9 @@ function Install-Silent([scriptblock]$log, [scriptblock]$progress) {
     try {
         if (Test-Path (Join-Path $DB '.')) { $st = Get-State; if ($defOut) { $st['VmOut'] = $defOut; Save-State $st } elseif ($st.VmOut) { $defOut = $st.VmOut } }
         $out = Select-VMOutput $defOut
-        if ($out) { & $log "  Voicemeeter :"; Configure-VM $out { param($m) & $log "    $m" } } else { & $log "  Voicemeeter : aucune sortie trouvee, a regler a l'etape 3" }
+        # $instLog et non $log : dans Configure-VM, $log designe ce bloc lui-meme (recursion infinie)
+        $instLog = $log
+        if ($out) { & $log "  Voicemeeter :"; Configure-VM $out { param($m) & $instLog "    $m" } } else { & $log "  Voicemeeter : aucune sortie trouvee, a regler a l'etape 3" }
     } catch { & $log "  Voicemeeter : $($_.Exception.Message) (a regler a l'etape 3)" }
     Remove-Item $InstTemp -Recurse -Force -ErrorAction SilentlyContinue
     & $progress 100 "Termine"
