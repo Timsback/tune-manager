@@ -2280,6 +2280,9 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                       <TextBlock Text="Finitions" FontSize="24" FontWeight="Bold" Margin="0,0,0,14"/>
                       <TextBlock Text="Nom du profil" Style="{StaticResource Label}"/>
                       <TextBox x:Name="WzName" Style="{StaticResource Input}" Margin="0,0,0,18"/>
+                      <TextBlock Text="Sortie du casque (Voicemeeter A1)" Style="{StaticResource Label}"/>
+                      <ComboBox x:Name="WzOut" Margin="0,0,0,6"/>
+                      <TextBlock Text="Activer ce profil envoie le son sur cette sortie. Si elle se d&#xE9;connecte (AirPods rang&#xE9;s...), Tune Manager passe sur le dernier profil dont la sortie est branch&#xE9;e, et revient quand elle se reconnecte." Style="{StaticResource Sub}" TextWrapping="Wrap" Margin="0,0,0,18"/>
                       <Grid Margin="0,0,0,8">
                         <TextBlock Text="Boost de sortie" Style="{StaticResource Label}"/>
                         <TextBlock x:Name="WzBoostVal" Text="off" HorizontalAlignment="Right" Foreground="{StaticResource Accent}" FontWeight="Bold"/>
@@ -2483,6 +2486,119 @@ function Select-VMOutputName([string]$pref) {
 }
 $sbTimer = New-Object Windows.Threading.DispatcherTimer; $sbTimer.Interval = [TimeSpan]::FromSeconds(15)
 $sbTimer.Add_Tick({ if ($win.IsVisible) { Update-StatusBar } }); $sbTimer.Start()
+
+# ---- Garde de la sortie audio
+# Quand le casque de la sortie A1 (ex. AirPods en Bluetooth) se (re)connecte, Windows en fait la sortie par defaut,
+# et son micro le micro des communications : le son contourne alors toute la chaine (ni tune ni EQ) et un chat vocal
+# ferait basculer le casque en « Mains libres ». Dans les 20 s qui suivent sa connexion, Tune Manager remet la sortie
+# par defaut sur Normal Audio et le micro des communications sur le micro principal. Un choix fait a la main plus tard
+# n'est jamais corrige.
+$guardCs = @'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevEnumG { int EnumAudioEndpoints(int f, int m, out IMMDevColG c); int GetDefaultAudioEndpoint(int f, int r, out IMMDevG d); }
+[ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevColG { int GetCount(out int n); int Item(int i, out IMMDevG d); }
+[ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevG { int Activate(IntPtr a, int b, IntPtr c, out IntPtr d); int OpenPropertyStore(int a, out IPropStoreG s); int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id); }
+[ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPropStoreG { int GetCount(out int n); int GetAt(int i, out PKeyG k); int GetValue(ref PKeyG k, out PVarG v); }
+[StructLayout(LayoutKind.Sequential)] public struct PKeyG { public Guid f; public int p; }
+[StructLayout(LayoutKind.Sequential)] public struct PVarG { public short vt; short a, b, c; public IntPtr p; IntPtr q; }
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDevEnumG {}
+[ComImport, Guid("f8679f50-850a-41cf-9c72-430f290290c8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPolicyConfigG { int a(); int b(); int c(); int d(); int e(); int f(); int g(); int h(); int i(); int j();
+  int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, int role); }
+[ComImport, Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")] class PolicyConfigG {}
+public static class AudioGuard {
+  static string Name(IMMDevG d) {
+    IPropStoreG s; if (d.OpenPropertyStore(0, out s) != 0) return "";
+    var k = new PKeyG { f = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), p = 14 }; PVarG v;
+    if (s.GetValue(ref k, out v) != 0 || v.vt != 31) return ""; return Marshal.PtrToStringUni(v.p);
+  }
+  // Peripherique actif dont le nom commence par 'prefix' (flow 0 = sortie, 1 = entree) : son Id, ou null
+  public static string Find(int flow, string prefix) {
+    IMMDevColG c; if (((IMMDevEnumG)new MMDevEnumG()).EnumAudioEndpoints(flow, 1, out c) != 0) return null; int n; c.GetCount(out n);
+    for (int i = 0; i < n; i++) { IMMDevG d; c.Item(i, out d); if (Name(d).StartsWith(prefix)) { string id; d.GetId(out id); return id; } }
+    return null;
+  }
+  // Nom du peripherique par defaut (role 0 = console, 1 = multimedia, 2 = communications)
+  public static string Default(int flow, int role) {
+    IMMDevG d; if (((IMMDevEnumG)new MMDevEnumG()).GetDefaultAudioEndpoint(flow, role, out d) != 0 || d == null) return null; return Name(d);
+  }
+  public static int SetDefault(string id, int role) { return ((IPolicyConfigG)new PolicyConfigG()).SetDefaultEndpoint(id, role); }
+}
+'@
+$script:guardA1On = $false; $script:guardUntil = [DateTime]::MinValue
+function Invoke-AudioGuard {
+    try {
+        if (-not (Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue)) { return }
+        $a1 = "$((Get-State).VmA1)"; if (-not $a1) { return }
+        if (-not ('AudioGuard' -as [type])) { Add-Type $guardCs }
+        $on = [bool][AudioGuard]::Find(0, $a1)
+        if ($on -and -not $script:guardA1On) { $script:guardUntil = (Get-Date).AddSeconds(20) }
+        $script:guardA1On = $on
+        if (-not $on -or (Get-Date) -gt $script:guardUntil) { return }
+        $fixed = @()
+        if ([AudioGuard]::Default(0, 1) -eq $a1 -or [AudioGuard]::Default(0, 0) -eq $a1) {
+            $normal = [AudioGuard]::Find(0, 'Normal Audio')
+            if ($normal) { foreach ($r in 0, 1, 2) { [void][AudioGuard]::SetDefault($normal, $r) }; $fixed += 'sortie par défaut remise sur Normal Audio' }
+        }
+        # Micro du casque (meme materiel que la sortie A1, ex. « (AirPods Pro ...) ») mis en communications : micro principal a la place
+        if ($a1 -match '\(([^)]+)\)\s*$') {
+            $hw = $Matches[1]; $comm = [AudioGuard]::Default(1, 2); $main = [AudioGuard]::Default(1, 0)
+            if ($comm -and $comm -like "*$hw*" -and $main -and $main -notlike "*$hw*") {
+                $mid = [AudioGuard]::Find(1, $main); if ($mid) { [void][AudioGuard]::SetDefault($mid, 2); $fixed += "micro des communications remis sur $main" }
+            }
+        }
+        if ($fixed.Count -and $win.IsVisible) { Set-Status "$a1 connecté : $($fixed -join ', ')." }
+    } catch {}
+}
+# ---- Bascule automatique de profil selon le casque branche
+# Chaque profil retient sa sortie (Voicemeeter A1). Quand la sortie du profil actif disparait (AirPods ranges),
+# Tune Manager active le dernier profil utilise dont la sortie est presente (ex. Astral sur le Sound Blaster) ;
+# quand la sortie d'un autre profil apparait (AirPods reconnectes), il active ce profil. Un etat doit etre vu
+# deux fois de suite (environ 4 s) avant d'agir, pour ignorer les micro-coupures Bluetooth.
+$script:outPrev = $null; $script:outStable = $null
+function Test-OutPresent([string]$o) { [bool][AudioGuard]::Find(0, $o) }
+function Pick-Profile($cands, $ref) {
+    # Meme jeu/version que le profil de reference d'abord, puis le plus recemment utilise
+    $cands | Sort-Object @{ e = { -not ($ref -and $_.Game -eq $ref.Game -and $_.Ver -eq $ref.Ver) } }, @{ e = { "$($_.LastUsed)" }; Descending = $true } | Select-Object -First 1
+}
+function Invoke-ProfileSwitch {
+    try {
+        if (-not (Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue)) { return }
+        $profs = @($script:Profiles | Where-Object { Profile-Out $_ }); if (-not $profs.Count) { return }
+        if (-not ('AudioGuard' -as [type])) { Add-Type $guardCs }
+        $now = @{}; foreach ($o in @($profs | ForEach-Object { Profile-Out $_ } | Select-Object -Unique)) { $now[$o] = Test-OutPresent $o }
+        $prev = $script:outPrev; $script:outPrev = $now
+        if (-not $prev) { return }
+        # Etat confirme : identique au passage precedent
+        $conf = @{}; foreach ($k in $now.Keys) { if ($prev.ContainsKey($k) -and $prev[$k] -eq $now[$k]) { $conf[$k] = $now[$k] } }
+        $old = $script:outStable
+        if (-not $old) { $old = @{} }
+        $first = -not $script:outStable
+        foreach ($k in $conf.Keys) { $old2 = $old[$k]; $old[$k] = $conf[$k]; if ($old2 -ne $conf[$k]) { if ($conf[$k]) { $old["+$k"] = 1 } else { $old["-$k"] = 1 } } }
+        $script:outStable = $old
+        $appeared = @($conf.Keys | Where-Object { $old.ContainsKey("+$_") }); $gone = @($conf.Keys | Where-Object { $old.ContainsKey("-$_") })
+        foreach ($k in @($old.Keys | Where-Object { $_ -match '^[+-]' })) { $old.Remove($k) }
+        $st = Get-State; $act = $script:Profiles | Where-Object { $_.Name -eq $st.Active } | Select-Object -First 1
+        $actOut = if ($act) { Profile-Out $act } else { '' }
+        $target = $null; $why = ''
+        $newOuts = @($appeared | Where-Object { $_ -ne $actOut -and -not $first })
+        if ($newOuts.Count) {
+            $target = Pick-Profile @($profs | Where-Object { $newOuts -contains (Profile-Out $_) }) $act; $why = "$(Out-Short (Profile-Out $target)) connecté"
+        } elseif ($actOut -and $conf.ContainsKey($actOut) -and -not $conf[$actOut] -and ($gone -contains $actOut -or $first)) {
+            $target = Pick-Profile @($profs | Where-Object { $conf[(Profile-Out $_)] }) $act; if ($target) { $why = "$(Out-Short $actOut) déconnecté" }
+        }
+        if ($target -and $target.Name -ne $st.Active) {
+            Activate-Profile $target.Name
+            try { $trayIcon.ShowBalloonTip(3000, 'Tune Manager', "$why : profil « $($target.Name) » activé.", 'None') } catch {}
+        }
+    } catch {}
+}
+$guardTimer = New-Object Windows.Threading.DispatcherTimer; $guardTimer.Interval = [TimeSpan]::FromSeconds(2)
+$guardTimer.Add_Tick({ Invoke-ProfileSwitch; Invoke-AudioGuard }); $guardTimer.Start()
 
 # ---- Icone dans la zone de notification
 $script:quitting = $false
@@ -2818,6 +2934,12 @@ $ui.BtnVm.Add_Click({
     if (-not $ui.CbOut.SelectedItem) { $ui.VmLog.Text = "Choisis d'abord ton casque dans la liste."; return }
     $ui.VmLog.Clear()
     try { Configure-VM $ui.CbOut.SelectedItem { param($m) LogTo $ui.VmLog $m } } catch { LogTo $ui.VmLog "Erreur : $($_.Exception.Message)" }
+    # Le profil actif retient cette sortie (sinon la bascule automatique la remplacerait)
+    $st = Get-State; $p = $script:Profiles | Where-Object { $_.Name -eq $st.Active } | Select-Object -First 1
+    if ($p -and (Profile-Out $p) -ne "$($ui.CbOut.SelectedItem)") {
+        Set-ProfileProp $p 'Out' "$($ui.CbOut.SelectedItem)"; try { Save-Profiles } catch {}
+        LogTo $ui.VmLog "Profil « $($p.Name) » : sortie memorisee."; Render-Profiles
+    }
 })
 
 # ---------------------------------------------------------------- 4. Profils
@@ -2826,10 +2948,36 @@ $ProfF = Join-Path $env:PUBLIC 'TuneManager\profiles.json'
 $script:Tunes = @(); $script:state = @{}; $script:Profiles = @(); $script:Phones = $null
 function Load-Profiles {
     $script:Profiles = @()
-    if (Test-Path $ProfF) { try { $script:Profiles = @([IO.File]::ReadAllText($ProfF) | ConvertFrom-Json) } catch {} }
+    # ConvertFrom-Json (PowerShell 5.1) renvoie le tableau en un seul objet : sans le deroulement ci-dessous, la liste
+    # etait imbriquee une fois de trop, puis reenregistree sous la forme {"value":[...],"Count":n} (profil fantome
+    # sans nom qui cachait les vrais). Les profils deja enveloppes ainsi sont recuperes.
+    if (Test-Path $ProfF) { try { $script:Profiles = @(Expand-Profiles ([IO.File]::ReadAllText($ProfF) | ConvertFrom-Json)) } catch {} }
+}
+function Expand-Profiles($x) {
+    foreach ($e in @($x)) {
+        if ($null -eq $e) { continue }
+        if ($e -is [array]) { Expand-Profiles $e }
+        elseif ($e.PSObject.Properties['value'] -and -not $e.PSObject.Properties['Name']) { Expand-Profiles $e.value }
+        elseif ($e.Name) { $e }
+    }
+}
+# Sortie A1 memorisee par le profil (nom Voicemeeter, ex. « Casque (AirPods Pro de ...) ») ; vide pour les anciens profils
+function Profile-Out($p) { if ($p.PSObject.Properties['Out']) { "$($p.Out)" } else { '' } }
+function Set-ProfileProp($p, [string]$k, $v) { if ($p.PSObject.Properties[$k]) { $p.$k = $v } else { $p | Add-Member NoteProperty $k $v } }
+# Nom court d'une sortie : le materiel entre parentheses (« Sound Blaster GC7 », « AirPods Pro de ... »)
+function Out-Short([string]$o) { if ($o -match '\(([^)]+)\)\s*$') { $Matches[1] -replace '\s*-\s*Find My$', '' } else { $o } }
+# Change la sortie A1 de Voicemeeter (Voicemeeter deja lance)
+function Set-VMA1([string]$out) {
+    [void](Init-VM)
+    $rc = [VM]::VBVMR_SetParameterStringA('Bus[0].device.wdm', $out)
+    if ($rc -ne 0) { return $false }
+    $st = Get-State; $st.VmA1 = $out; Save-State $st
+    $script:guardUntil = (Get-Date).AddSeconds(20)   # Windows peut basculer sa sortie par defaut sur ce casque : la garde corrige
+    $true
 }
 function Save-Profiles {
     New-Item -ItemType Directory (Split-Path $ProfF) -Force | Out-Null
+    $script:Profiles = @(Expand-Profiles $script:Profiles)
     [IO.File]::WriteAllText($ProfF, (ConvertTo-Json @($script:Profiles) -Depth 4))
 }
 function Eq-Label([string]$file) { $b = [IO.Path]::GetFileNameWithoutExtension($file) -replace ' - [\w-]+V\d+$', ''; if ($b -eq 'Flat_EQ') { 'Aucun EQ (plat)' } else { $b } }
@@ -2881,6 +3029,8 @@ function Render-Profiles {
         [void]$sp.Children.Add($s)
         $s2 = New-Object Windows.Controls.TextBlock; $s2.Text = "Arme $(Gun-Name $p.Gun)  ·  $($p.Hrir)  ·  $(if ([int]$p.Boost -gt 0) { "+$($p.Boost) dB" } else { 'boost off' })"; $s2.Foreground = Brush '#8E7F7B'; $s2.FontSize = 12
         [void]$sp.Children.Add($s2)
+        $po = Profile-Out $p
+        if ($po) { $s3 = New-Object Windows.Controls.TextBlock; $s3.Text = "Sortie : $(Out-Short $po)"; $s3.Foreground = Brush '#8E7F7B'; $s3.FontSize = 12; $s3.Margin = '0,3,0,0'; $s3.TextTrimming = 'CharacterEllipsis'; [void]$sp.Children.Add($s3) }
         $b.Child = $sp
         $b.Add_MouseEnter({ param($s) if ($s.BorderBrush.Color -ne [Windows.Media.Color]::FromRgb(255, 82, 54)) { $s.BorderBrush = Brush '#7A3426' } })
         $b.Add_MouseLeave({ param($s) $st2 = Get-State; $s.BorderBrush = Brush $(if ($s.Tag -eq $st2.Active) { '#FF5236' } else { '#3A2420' }) })
@@ -2901,8 +3051,17 @@ function Activate-Profile([string]$name) {
         }
         $t = Apply-Selection $p.Game $p.Ver $p.Family $p.Gun $p.Hrir $eq ([int]$p.Boost)
         $st = Get-State; $st.Active = $p.Name; if ($p.PhoneFile) { $st.Phone = "$($p.Phone)|$($p.PhoneFile)" }; Save-State $st
+        # Sortie du profil : Voicemeeter A1 passe sur ce casque. Ancien profil sans sortie : il adopte la sortie actuelle.
+        $out = Profile-Out $p; $outMsg = ''
+        $vmOn = [bool](Get-Process voicemeeter, voicemeeter_x64 -ErrorAction SilentlyContinue)
+        if (-not $out -and $st.VmA1) { Set-ProfileProp $p 'Out' $st.VmA1 }
+        elseif ($out -and $out -ne $st.VmA1 -and $vmOn) {
+            if (@(Get-VMOutputs) -contains $out) { if (Set-VMA1 $out) { $outMsg = " Sortie : $(Out-Short $out)." } }
+            else { $outMsg = " Sortie $(Out-Short $out) absente : le son reste sur $(Out-Short $st.VmA1)." }
+        }
+        Set-ProfileProp $p 'LastUsed' (Get-Date).ToString('o'); try { Save-Profiles } catch {}
         Render-Profiles
-        Set-Status "Profil « $($p.Name) » appliqué sur Art Tune +."
+        Set-Status "Profil « $($p.Name) » appliqué sur Art Tune +.$outMsg"
     } catch { Set-Status "Erreur : $($_.Exception.Message)" $true }
     finally { $win.Cursor = $null }
 }
@@ -2989,13 +3148,22 @@ function Wz-Step([int]$n) {
     if ($n -eq 3) {
         $g, $v = $script:wz.Game -split '\|'
         if (-not $script:wz.NameTouched) { $ui.WzName.Text = "$($script:wz.Phone)  ·  $g $v" }
+        if (-not $script:wz.OutLoaded) {
+            # Sorties Voicemeeter ; par defaut celle du profil modifie, sinon la sortie actuelle
+            $script:wz.OutLoaded = $true; $ui.WzOut.Items.Clear()
+            $outs = @(); try { $outs = @(Get-VMOutputs) } catch {}
+            $want = if ($script:wz.Edit -and (Profile-Out $script:wz.Edit)) { Profile-Out $script:wz.Edit } else { "$((Get-State).VmA1)" }
+            if ($want -and $outs -notcontains $want) { $outs += $want }
+            foreach ($o in $outs) { [void]$ui.WzOut.Items.Add($o) }
+            if ($want) { $ui.WzOut.SelectedItem = $want } elseif ($outs.Count) { $ui.WzOut.SelectedIndex = 0 }
+        }
         Wz-Summary
     }
 }
 function Wz-Summary {
     $g, $v = $script:wz.Game -split '\|'; $bv = [int]$ui.WzBoost.Value
     $src = if ($script:wz.EqName) { 'EQ installé' } else { 'EQ créé depuis squig.link (target ArtIsWar)' }
-    $ui.WzSummary.Text = "Casque : $($script:wz.Phone)  ($src)`nJeu : $g $v`nStyle : $(Fam-Name $script:wz.Family)   ·   Arme : $(Gun-Name $script:wz.Gun)   ·   HRIR : $($script:wz.Hrir)`nBoost : $(if ($bv) { "+$bv dB" } else { 'off' })"
+    $ui.WzSummary.Text = "Casque : $($script:wz.Phone)  ($src)`nJeu : $g $v`nStyle : $(Fam-Name $script:wz.Family)   ·   Arme : $(Gun-Name $script:wz.Gun)   ·   HRIR : $($script:wz.Hrir)`nBoost : $(if ($bv) { "+$bv dB" } else { 'off' })$(if ($ui.WzOut.SelectedItem) { "`nSortie : $($ui.WzOut.SelectedItem)" })"
 }
 function Open-Wizard($edit) {
     $st = Get-State
@@ -3081,6 +3249,7 @@ $ui.ActBoost.Add_PreviewMouseLeftButtonUp($applyBoost)
 $ui.ActBoost.Add_PreviewKeyUp($applyBoost)
 $ui.WzSearch.Add_TextChanged({ if ($script:wz.Step -eq 1) { Wz-Phones } })
 $ui.WzName.Add_TextChanged({ if ($ui.WzName.IsKeyboardFocused) { $script:wz.NameTouched = $true } })
+$ui.WzOut.Add_SelectionChanged({ if ($script:wz.Step -eq 3) { Wz-Summary } })
 $ui.WzBoost.Add_ValueChanged({ $v = [int]$ui.WzBoost.Value; $ui.WzBoostVal.Text = if ($v -eq 0) { 'off' } else { "+$v dB" }; if ($script:wz.Step -eq 3) { Wz-Summary } })
 $ui.WzCancel.Add_Click({ $ui.Wizard.Visibility = 'Collapsed' })
 $ui.WzBack.Add_Click({ Wz-Step ($script:wz.Step - 1) })
@@ -3101,7 +3270,8 @@ $ui.WzNext.Add_Click({
         $eqName = if ($same) { $same.Name } else { 'Flat_EQ.txt' }
     }
     $p = [pscustomobject]@{ Name = $name; Game = $g; Ver = $v; Family = $script:wz.Family; Gun = $script:wz.Gun; Hrir = $script:wz.Hrir
-        Phone = $script:wz.Phone; PhoneFile = "$($script:wz.PhoneFile)"; EqName = $eqName; Boost = [int]$ui.WzBoost.Value }
+        Phone = $script:wz.Phone; PhoneFile = "$($script:wz.PhoneFile)"; EqName = $eqName; Boost = [int]$ui.WzBoost.Value
+        Out = "$($ui.WzOut.SelectedItem)"; LastUsed = $(if ($script:wz.Edit -and $script:wz.Edit.PSObject.Properties['LastUsed']) { $script:wz.Edit.LastUsed } else { '' }) }
     $script:Profiles = @($script:Profiles | Where-Object { $_.Name -ne $old }) + $p
     try { Save-Profiles } catch { $ui.WzMsg.Text = "Enregistrement impossible : $($_.Exception.Message)"; return }
     $ui.Wizard.Visibility = 'Collapsed'
