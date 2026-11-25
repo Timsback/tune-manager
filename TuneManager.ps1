@@ -440,6 +440,14 @@ function Get-SquigPhones([scriptblock]$onSource) {
                         foreach ($pre in @($brand, "$($names[0])", ("$($names[0])" -replace '^\S+\s+', '')) | Where-Object { $_ }) { $var = $var -replace "^$([regex]::Escape($pre))\s*", '' }
                         $var = $var.Trim()
                         $var = ($var -replace '^\((.*)\)$', '$1').Trim()
+                        if ($brand -eq 'Apple' -or "$($names[0])" -match '^Apple\s') {
+                            # AirPods (traitement actif, courbe dependante du volume) mesures a plusieurs volumes :
+                            # « 625 8A358 » -> « volume 62,5 %, firmware 8A358 » ; « balanced slight 50 » -> « EQ Apple balanced slight, volume 50 % »
+                            $var = $var -replace '\bvol\.?\s*(\d+)\b', 'volume $1 %' -replace '(?<![\w.,-])625(?![\w.,])', '62,5'
+                            $var = $var -replace '(?<![\w.,%-]|volume )(25|50|62,5|75|100)(?![\w.,%])', 'volume $1 %'
+                            $var = $var -replace '\b(\d[A-Z]\d{2,3})\b', 'firmware $1' -replace ' % firmware', ' %, firmware'
+                            $var = $var -replace '^(balanced|vocal|brightness) (slight|moderate|strong) volume', 'EQ Apple $1 $2, volume'
+                        }
                         $n = if ($files.Count -gt 1 -and $files.Count -eq $names.Count) { $names[$i] } elseif ($var) { "$($names[0]) ($var)" } else { $names[0] }
                         if ($n -notmatch "^$([regex]::Escape($brand))\b") { $n = "$brand $n" }
                         $n = "$n · $($src.Name)"
