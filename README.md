@@ -23,7 +23,8 @@ ou GitHub CLI connecté (`gh auth login`).
 
 - **Profils** : casque + jeu + style de preset + niveau de ta propre arme + HRIR + boost, activés en un clic
   (fenêtre ou icône de la zone de notification). Boost réglable en direct.
-- **EQ automatique** : cherche ton casque sur squig.link (GadgetryTech) et crée l'EQ sur la target ArtIsWar
+- **EQ automatique** : cherche ton casque sur squig.link (GadgetryTech en priorité, puis une douzaine d'autres bases squig.link
+  pour les modèles absents, ex. AirPods Pro 3) et crée l'EQ sur la target ArtIsWar
   de la version du jeu (même algorithme que l'AutoEQ du site).
 - **Configuration** :
   - *Installation* : installation et désinstallation silencieuses (VB-CABLE, Voicemeeter, ReaPlugs,

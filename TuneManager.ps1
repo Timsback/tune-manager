@@ -389,31 +389,78 @@ public static class SquigEq {
 # Portage fidele de l'AutoEQ de squig.link : meme resultat que le bouton AutoEQ du site.
 # ============================================================================
 $SquigBase = 'https://gadgetrytech.squig.link'
+# Bases squig.link parcourues. GadgetryTech (la 1re) est la base de reference : ses modeles gardent leur nom tel quel.
+# Les autres ajoutent les modeles absents de GadgetryTech (ex. AirPods Pro 3) ; leur nom porte la base (« · sai »).
+$SquigSources = @(
+    @{ Name = 'GadgetryTech'; Base = 'https://gadgetrytech.squig.link' }
+    @{ Name = 'squig.link'; Base = 'https://squig.link' }
+    @{ Name = 'sai'; Base = 'https://sai.squig.link' }
+    @{ Name = 'precog'; Base = 'https://precog.squig.link' }
+    @{ Name = 'timmyv'; Base = 'https://timmyv.squig.link' }
+    @{ Name = 'hbb'; Base = 'https://hbb.squig.link' }
+    @{ Name = 'kr0mka'; Base = 'https://kr0mka.squig.link' }
+    @{ Name = 'vortex'; Base = 'https://vortexreviews.squig.link' }
+    @{ Name = 'animagus'; Base = 'https://animagus.squig.link' }
+    @{ Name = 'jaytiss'; Base = 'https://jaytiss.squig.link' }
+    @{ Name = 'acho'; Base = 'https://achoreviews.squig.link' }
+    @{ Name = 'tonedeafmonk'; Base = 'https://tonedeafmonk.squig.link' }
+    @{ Name = 'harpo'; Base = 'https://harpo.squig.link' }
+    @{ Name = 'iemworld'; Base = 'https://iemworld.squig.link' }
+)
 $SquigCache = Join-Path $env:PUBLIC 'TuneManager\squig'
 function Init-Squig { if (-not ('SquigEq' -as [type])) { Add-Type -TypeDefinition $squigCs -ReferencedAssemblies System.Core } }
-# Liste des casques/IEM mesures (cache local 7 jours)
-function Get-SquigPhones {
+# PhoneFile : « base|fichier » pour les autres bases, « fichier » seul pour GadgetryTech (profils existants)
+function Split-SquigFile([string]$file) { if ($file -match '^(https://[^|]+)\|(.+)$') { $Matches[1], $Matches[2] } else { $SquigBase, $file } }
+# Liste des casques/IEM mesures, toutes bases confondues (cache local 7 jours par base). $onSource : progression (nom de la base).
+function Get-SquigPhones([scriptblock]$onSource) {
     New-Item -ItemType Directory $SquigCache -Force | Out-Null
-    $pbf = Join-Path $SquigCache 'phone_book.json'
-    if (-not (Test-Path $pbf) -or ((Get-Date) - (Get-Item $pbf).LastWriteTime).TotalDays -gt 7) {
-        try { Invoke-WebRequest "$SquigBase/data/phone_book.json" -OutFile $pbf -UseBasicParsing -TimeoutSec 30 } catch { if (-not (Test-Path $pbf)) { throw "squig.link injoignable : $($_.Exception.Message)" } }
-    }
-    $pb = [IO.File]::ReadAllText($pbf) | ConvertFrom-Json
-    foreach ($b in $pb) { foreach ($ph in $b.phones) {
-        $files = @($ph.file); $names = @($ph.name)
-        for ($i = 0; $i -lt $files.Count; $i++) {
-            $n = if ($names.Count -gt $i -and $files.Count -eq $names.Count) { $names[$i] } elseif ($files.Count -gt 1) { "$($names[0]) ($($files[$i] -replace [regex]::Escape("$($b.name) "), ''))" } else { $names[0] }
-            [pscustomobject]@{ Label = "$($b.name) $n"; File = $files[$i] }
+    $seen = @{}; $any = $false
+    foreach ($src in $SquigSources) {
+        $main = $src.Base -eq $SquigBase
+        if ($onSource) { & $onSource $src.Name }
+        $pbf = Join-Path $SquigCache $(if ($main) { 'phone_book.json' } else { "phone_book.$($src.Name).json" })
+        if (-not (Test-Path $pbf) -or ((Get-Date) - (Get-Item $pbf).LastWriteTime).TotalDays -gt 7) {
+            try { Invoke-WebRequest "$($src.Base)/data/phone_book.json" -OutFile "$pbf.tmp" -UseBasicParsing -TimeoutSec $(if ($main) { 30 } else { 12 }); Move-Item "$pbf.tmp" $pbf -Force } catch { Remove-Item "$pbf.tmp" -ErrorAction SilentlyContinue }
         }
-    } } 
+        if (-not (Test-Path $pbf)) { continue }
+        try { $pb = [IO.File]::ReadAllText($pbf) | ConvertFrom-Json } catch { continue }
+        $any = $true
+        foreach ($b in $pb) {
+            $brand = ("$($b.name)" -replace '^\s*\[[^\]]*\]\s*', '').Trim()
+            foreach ($ph in $b.phones) {
+                if ($ph -is [string]) { $files = @($ph); $names = @($ph) } else { $files = @($ph.file); $names = @($ph.name) }
+                if (-not $files.Count -or -not $files[0]) { continue }
+                if (-not $names.Count -or -not $names[0]) { $names = $files }
+                for ($i = 0; $i -lt $files.Count; $i++) {
+                    if ($main) {
+                        $n = if ($names.Count -gt $i -and $files.Count -eq $names.Count) { $names[$i] } elseif ($files.Count -gt 1) { "$($names[0]) ($($files[$i] -replace [regex]::Escape("$($b.name) "), ''))" } else { $names[0] }
+                    } else {
+                        # Variante : le fichier sans la marque ni le nom du modele (« Apple AirPods Pro 3 75 8A358 » -> « 75 8A358 »)
+                        $var = $files[$i]
+                        foreach ($pre in @($brand, "$($names[0])", ("$($names[0])" -replace '^\S+\s+', '')) | Where-Object { $_ }) { $var = $var -replace "^$([regex]::Escape($pre))\s*", '' }
+                        $var = $var.Trim()
+                        $var = ($var -replace '^\((.*)\)$', '$1').Trim()
+                        $n = if ($files.Count -gt 1 -and $files.Count -eq $names.Count) { $names[$i] } elseif ($var) { "$($names[0]) ($var)" } else { $names[0] }
+                        if ($n -notmatch "^$([regex]::Escape($brand))\b") { $n = "$brand $n" }
+                        $n = "$n · $($src.Name)"
+                    }
+                    $label = if ($main) { "$($b.name) $n" } else { $n }
+                    if ($seen[$label]) { continue }; $seen[$label] = 1
+                    [pscustomobject]@{ Label = $label; File = $(if ($main) { $files[$i] } else { "$($src.Base)|$($files[$i])" }); Src = $src.Name }
+                }
+            }
+        }
+    }
+    if (-not $any) { throw 'squig.link injoignable.' }
 }
 function Get-VersionTarget([string]$game, [string]$ver) { Get-ChildItem (Join-Path $Lib "$game\$ver") -Filter '*_Target_*.txt' -ErrorAction SilentlyContinue | Select-Object -First 1 }
 # Cree l'EQ du casque pour un jeu/version et le range dans la reserve + la bibliotheque. Renvoie le chemin dans la bibliotheque.
 function New-HeadphoneEq([string]$label, [string]$file, [string]$game, [string]$ver) {
     Init-Squig
     $tgt = Get-VersionTarget $game $ver; if (-not $tgt) { throw "Pas de target ArtIsWar pour $game $ver." }
+    $base, $f = Split-SquigFile $file
     $txt = @(); foreach ($c in 'L', 'R') {
-        try { $txt += (Invoke-WebRequest "$SquigBase/data/$([uri]::EscapeDataString("$file $c")).txt" -UseBasicParsing -TimeoutSec 30).Content } catch {}
+        try { $txt += (Invoke-WebRequest "$base/data/$([uri]::EscapeDataString("$f $c")).txt" -UseBasicParsing -TimeoutSec 30).Content } catch {}
     }
     if (-not $txt.Count) { throw "Mesure introuvable sur squig.link pour $label." }
     $eq = [SquigEq]::Build([string[]]$txt, [IO.File]::ReadAllText($tgt.FullName), 10)
@@ -2882,7 +2929,7 @@ function Wz-Phones {
     $local = @(Get-ChildItem (Join-Path $Lib "$g\$v\eq") -Filter *.txt -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ Label = (Eq-Label $_.Name); File = ''; EqName = $_.Name } })
     $rows = @($local | Where-Object { -not $q -or $_.Label -like "*$q*" })
     $have = @($local.Label)
-    if ($script:Phones) { $rows += @($script:Phones | Where-Object { $have -notcontains $_.Label -and (-not $q -or $_.Label -like "*$q*") } | Select-Object -First 60 | ForEach-Object { [pscustomobject]@{ Label = $_.Label; File = $_.File; EqName = '' } }) }
+    if ($script:Phones) { $rows += @($script:Phones | Where-Object { $have -notcontains $_.Label -and (-not $q -or $_.Label -like "*$q*") } | Select-Object -First 60 | ForEach-Object { [pscustomobject]@{ Label = $_.Label; File = $_.File; EqName = ''; Src = $_.Src } }) }
     foreach ($r in $rows) {
         $sel = $script:wz.Phone -eq $r.Label
         $b = New-Object Windows.Controls.Border; $b.CornerRadius = 12; $b.Padding = '16,11'; $b.Margin = '0,0,0,6'; $b.Cursor = 'Hand'; $b.Tag = $r
@@ -2890,7 +2937,7 @@ function Wz-Phones {
         $gr = New-Object Windows.Controls.Grid
         $t = New-Object Windows.Controls.TextBlock; $t.Text = $r.Label; $t.FontSize = 14; $t.FontWeight = 'SemiBold'; $t.VerticalAlignment = 'Center'
         [void]$gr.Children.Add($t)
-        $tag = if ($r.EqName -eq 'Flat_EQ.txt') { 'Plat' } elseif ($r.EqName) { 'EQ installé' } else { 'squig.link' }
+        $tag = if ($r.EqName -eq 'Flat_EQ.txt') { 'Plat' } elseif ($r.EqName) { 'EQ installé' } elseif ($r.Src -and $r.Src -ne 'GadgetryTech') { $r.Src } else { 'squig.link' }
         $c = New-Chip $tag ($tag -eq 'EQ installé'); $c.Margin = '0'; $c.HorizontalAlignment = 'Right'; [void]$gr.Children.Add($c)
         $b.Child = $gr
         $b.Add_MouseLeftButtonUp({ param($s) $script:wz.Phone = $s.Tag.Label; $script:wz.PhoneFile = $s.Tag.File; $script:wz.EqName = $s.Tag.EqName; Wz-Phones })
@@ -2957,7 +3004,10 @@ function Open-Wizard($edit) {
     $ui.WzSearch.Text = ''
     $ui.Wizard.Visibility = 'Visible'
     if ($edit) { Wz-Step 2; return }
-    if (-not $script:Phones) { $ui.WzMsg.Text = 'Chargement de la liste squig.link...'; Pump; try { $script:Phones = @(Get-SquigPhones | Sort-Object Label) } catch {} }
+    if (-not $script:Phones) {
+        $ui.WzMsg.Text = 'Chargement des bases squig.link...'; Pump
+        try { $script:Phones = @(Get-SquigPhones { param($n) $ui.WzMsg.Text = "Chargement des bases squig.link ($n)..."; Pump } | Sort-Object Label) } catch {}
+    }
     Wz-Step 1
 }
 $ui.BtnNewProfile.Add_Click({ if (-not $script:Tunes.Count) { Set-Status "Installe d'abord la bibliothèque (étape 1)." $true; return }; Open-Wizard $null })
